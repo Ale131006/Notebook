@@ -1,6 +1,11 @@
-from PySide6.QtWidgets import QGraphicsTextItem, QGraphicsItem, QStyleOptionGraphicsItem, QWidget
+from PySide6.QtWidgets import (
+    QGraphicsTextItem, QGraphicsItem, QStyleOptionGraphicsItem, QWidget,
+    QMenu, QDialog, QVBoxLayout, QDateTimeEdit, QPushButton
+)
 from PySide6.QtGui import QPen, QColor, QBrush, QFont, QTextCursor, QUndoCommand, QPainterPath
-from PySide6.QtCore import QRectF, Qt, QPointF
+from PySide6.QtCore import QRectF, Qt, QPointF, QDateTime, QTimer
+import datetime
+import notify
 
 
 
@@ -32,16 +37,17 @@ class CanvasTextItem(QGraphicsTextItem):
         if start_edit:
             self.activate_edit_mode()
 
+        # deadline state
+        self.deadline: datetime.datetime | None = None
+        self._deadline_set_at: datetime.datetime | None = None
+        self._deadline_pre_notified: bool = False
+        self._deadline_notified: bool = False
+        self._deadline_task_name = None  # optional: name of scheduled system task
+
     # ----------------- Hintergrund -----------------
     def boundingRect(self) -> QRectF:
         rect = super().boundingRect()
         return rect.adjusted(-self._padding, -self._padding, self._padding, self._padding)
-
-    def paint(self, painter, option: QStyleOptionGraphicsItem, widget: QWidget | None):
-        painter.setBrush(QBrush(self._bg_color))
-        painter.setPen(QPen(self._border_color, 2))
-        painter.drawRoundedRect(self.boundingRect(), 6, 6)
-        super().paint(painter, option, widget)
 
     # ----------------- Editieren per Doppelklick -----------------
     def mouseDoubleClickEvent(self, event):
@@ -99,7 +105,135 @@ class CanvasTextItem(QGraphicsTextItem):
         path.addRoundedRect(rect, 6, 6)
         return path
 
+    # ----------------- Kontextmenü für Deadline -----------------
+    def contextMenuEvent(self, event):
+        menu = QMenu()
+        set_deadline_action = menu.addAction("Deadline setzen...")
+        clear_deadline_action = menu.addAction("Deadline löschen")
+        action = menu.exec_(event.screenPos())
 
+        if action == set_deadline_action:
+            self._open_deadline_dialog()
+        elif action == clear_deadline_action:
+            # remove scheduled system task if exists
+            if self._deadline_task_name:
+                try:
+                    notify.delete_scheduled_task(self._deadline_task_name)
+                except Exception:
+                    pass
+                self._deadline_task_name = None
+            self.clear_deadline()
+
+    def _open_deadline_dialog(self):
+        dlg = QDialog()
+        dlg.setWindowTitle("Deadline setzen")
+        layout = QVBoxLayout(dlg)
+        dt_edit = QDateTimeEdit(dlg)
+        dt_edit.setCalendarPopup(True)
+        dt_edit.setDateTime(QDateTime.currentDateTime())
+        layout.addWidget(dt_edit)
+
+        btn_ok = QPushButton("OK", dlg)
+        btn_cancel = QPushButton("Abbrechen", dlg)
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+        layout.addWidget(btn_ok)
+        layout.addWidget(btn_cancel)
+
+        if dlg.exec() == QDialog.Accepted:
+            qdt = dt_edit.dateTime()
+            # Qt -> Python datetime
+            py_dt = qdt.toPython() if hasattr(qdt, "toPython") else datetime.datetime(
+                qdt.date().year(), qdt.date().month(), qdt.date().day(),
+                qdt.time().hour(), qdt.time().minute(), qdt.time().second()
+            )
+            self.set_deadline(py_dt)
+
+    # ----------------- Deadline-Logik -----------------
+    def set_deadline(self, dt: datetime.datetime):
+        """Set or change deadline (local naive datetime)."""
+        self.deadline = dt
+        self._deadline_set_at = datetime.datetime.now()
+        self._deadline_pre_notified = False
+        self._deadline_notified = False
+        self.update()
+
+    def clear_deadline(self):
+        self.deadline = None
+        self._deadline_set_at = None
+        self._deadline_pre_notified = False
+        self._deadline_notified = False
+        # delete scheduled task if any
+        if self._deadline_task_name:
+            try:
+                notify.delete_scheduled_task(self._deadline_task_name)
+            except Exception:
+                pass
+            self._deadline_task_name = None
+        self.update()
+
+    def _compute_pre_notify_delta(self) -> datetime.timedelta:
+        """Berechnet Vorwarnzeit P = clamp((deadline - set_at)/6, 5min, 1day)."""
+        if not self.deadline or not self._deadline_set_at:
+            return datetime.timedelta(minutes=5)
+        total = self.deadline - self._deadline_set_at
+        if total.total_seconds() <= 0:
+            return datetime.timedelta(minutes=5)
+        pre = total / 6  # timedelta division -> timedelta
+        min_t = datetime.timedelta(minutes=5)
+        max_t = datetime.timedelta(days=1)
+        if pre < min_t:
+            return min_t
+        if pre > max_t:
+            return max_t
+        return pre
+
+    # ----------------- Painting + Swiss date format -----------------
+    def paint(self, painter, option: QStyleOptionGraphicsItem, widget: QWidget | None):
+        # Background + border
+        painter.setBrush(QBrush(self._bg_color))
+        painter.setPen(QPen(self._border_color, 2))
+        painter.drawRoundedRect(self.boundingRect(), 6, 6)
+
+        # Draw the regular text / editor contents
+        super().paint(painter, option, widget)
+
+        # Overlay: Deadline (Swiss date format)
+        if self.deadline:
+            now = datetime.datetime.now()
+            remaining = self.deadline - now
+            pre = self._compute_pre_notify_delta()
+
+            # choose color: red if overdue, yellow if within pre-window, default small highlight otherwise
+            if remaining.total_seconds() <= 0:
+                pen_color = QColor("#ff5555")  # red = overdue
+            elif remaining <= pre:
+                pen_color = QColor("#ffdd55")  # yellow = pre-warning
+            else:
+                pen_color = QColor("#bbbbbb")  # subtle gray for distant deadlines
+
+            # Label: swiss format dd.MM.YYYY HH:MM
+            try:
+                label_date = self.deadline.strftime("%d.%m.%Y %H:%M")
+            except Exception:
+                label_date = str(self.deadline)
+
+            if remaining.total_seconds() > 0:
+                remaining_str = str(remaining).split(".")[0]
+                label = f"⏳ {label_date} ({remaining_str})"
+            else:
+                label = f"🔔 Deadline: {label_date} (abgelaufen)"
+
+            r = self.boundingRect()
+            painter.save()
+            painter.setPen(pen_color)
+            font = painter.font()
+            font.setPointSize(max(8, font.pointSize() - 2))
+            painter.setFont(font)
+            x = r.right() - 4 - painter.fontMetrics().horizontalAdvance(label)
+            y = r.bottom() - 4
+            painter.drawText(x, y, label)
+            painter.restore()
 # ============================================================
 # Undo/Redo Commands
 # ============================================================

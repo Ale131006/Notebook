@@ -1,4 +1,4 @@
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QPen, QBrush, QFont, QAction, QIcon, QUndoStack
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QGraphicsItem, QGraphicsView, QGraphicsScene,
@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
 )
 from vgraphicsscene import ViewGraphicsScene
 from vgraphicsview import ViewGraphicsView
+import datetime
+import notify
 
 
 class MainWindow(QMainWindow):
@@ -93,6 +95,19 @@ class MainWindow(QMainWindow):
 
         # Notizbuch-Speicher
         self.notebooks = []
+
+        # deadline timer: check every second for visual update and notifications
+        self.deadline_timer = QTimer(self)
+        self.deadline_timer.setInterval(1000)  # 1 second
+        self.deadline_timer.timeout.connect(self._check_deadlines)
+        self.deadline_timer.start()
+
+        # Deadline timer: prüft jede Sekunde auf Vorwarnungen / Ablauf
+        self._deadline_timer = QTimer(self)
+        self._deadline_timer.setInterval(1000)  # 1s
+        self._deadline_timer.timeout.connect(self._check_deadlines)
+        self._deadline_timer.start()
+
 
         # Erstes Notebook erzeugen
         self.add_notebook(initial=True)
@@ -206,3 +221,58 @@ class MainWindow(QMainWindow):
         self.current_scene.set_eraser_mode(enabled)
         if enabled:
             self.current_scene.drawing_enabled = True
+
+    def _check_deadlines(self):
+        """Periodisch prüfen: alle Text-Items updaten und bei Ablauf / Vorwarnung benachrichtigen."""
+        now = datetime.datetime.now()
+        for nb in self.notebooks:
+            scene = nb.get("scene")
+            if not scene:
+                continue
+            for item in scene.items():
+                # nur TextItems behandeln (duck-typing)
+                if not hasattr(item, "deadline"):
+                    continue
+
+                # erzwinge Repaint (Overlay aktualisieren)
+                try:
+                    item.update()
+                except Exception:
+                    pass
+
+                if item.deadline is None:
+                    continue
+
+                # compute pre-notify delta (use method on item)
+                try:
+                    pre = item._compute_pre_notify_delta()
+                except Exception:
+                    pre = datetime.timedelta(minutes=5)
+
+                # Vorwarnung
+                if (not getattr(item, "_deadline_pre_notified", False)
+                        and now >= (item.deadline - pre)
+                        and now < item.deadline):
+                    # Text snippet
+                    text_snippet = item.toPlainText().strip().splitlines()[0][:120]
+                    title = "Erinnerung: Deadline naht"
+                    message = text_snippet if text_snippet else "Notiz"
+                    try:
+                        notify.show_toast(title, message)
+                    except Exception:
+                        QMessageBox.information(self, title, message)
+                    item._deadline_pre_notified = True
+                    # optional: visual update already done above
+
+                # Endgültige Notification
+                if (not getattr(item, "_deadline_notified", False)
+                        and now >= item.deadline):
+                    text_snippet = item.toPlainText().strip().splitlines()[0][:200]
+                    title = "Deadline abgelaufen"
+                    message = text_snippet if text_snippet else "Notiz"
+                    try:
+                        notify.show_toast(title, message)
+                    except Exception:
+                        QMessageBox.information(self, title, message)
+                    item._deadline_notified = True
+                    item.update()

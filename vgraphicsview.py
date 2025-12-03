@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QGraphicsView
 from PySide6.QtCore import Qt, QPointF, QEvent
-from PySide6.QtGui import QPainter, QTabletEvent
+from PySide6.QtGui import QPainter, QTabletEvent, QMouseEvent
 
 
 class ViewGraphicsView(QGraphicsView):
@@ -15,6 +15,9 @@ class ViewGraphicsView(QGraphicsView):
         self._panning = False
         self._pan_start = None
 
+        # Tablet-down state (für korrekte Buttons bei Move)
+        self._tablet_down = False
+
         # WICHTIG: gute Qualität + flüssiges Zeichnen
         self.setRenderHints(
             QPainter.Antialiasing |
@@ -23,8 +26,6 @@ class ViewGraphicsView(QGraphicsView):
         )
 
         # Tablet-Stift aktivieren
-        self.setAttribute(Qt.WA_AcceptTouchEvents, True)
-        self.viewport().setAttribute(Qt.WA_AcceptTouchEvents, True)
         self.viewport().setAttribute(Qt.WA_TabletTracking, True)
 
         # Scene Setup
@@ -46,18 +47,87 @@ class ViewGraphicsView(QGraphicsView):
     # --------------------------------------------------------------
     def tabletEvent(self, event: QTabletEvent):
         """
-        Weiterleitung direkt in die Scene.
-        Dies verhindert Lag und deaktiviert Maus-Emulation.
+        Convert tablet events (press/move/release) into synthetic QMouseEvent and
+        dispatch them via QGraphicsView.event so the scene receives normal mouse events.
+        This avoids Qt's built-in tablet->mouse emulation path which can add lag.
+        Pressure/tilt are ignored in this conversion (we simulate simple left-button).
         """
-        if self.scene():
-            self.scene().tabletEvent(event)
+
+        # pick best-available local / window / screen positions (Qt version differences)
+        try:
+            local_pos = event.position()        # Qt6.5+ returns QPointF
+        except Exception:
+            try:
+                local_pos = event.posF()
+            except Exception:
+                local_pos = event.pos()
+
+        try:
+            window_pos = event.windowPos()
+        except Exception:
+            window_pos = local_pos
+
+        try:
+            screen_pos = event.globalPosition()
+        except Exception:
+            # fallback: use window_pos as approximation
+            screen_pos = window_pos
+
+        t = event.type()
+        if t == QEvent.TabletPress:
+            mtype = QEvent.MouseButtonPress
+            button = Qt.LeftButton
+            buttons = Qt.LeftButton
+            self._tablet_down = True
+        elif t == QEvent.TabletMove:
+            mtype = QEvent.MouseMove
+            button = Qt.NoButton
+            buttons = Qt.LeftButton if self._tablet_down else Qt.NoButton
+        elif t == QEvent.TabletRelease:
+            mtype = QEvent.MouseButtonRelease
+            button = Qt.LeftButton
+            buttons = Qt.NoButton
+            self._tablet_down = False
+        else:
+            # other tablet events (e.g. proximity) -> ignore
+            event.ignore()
+            return
+
+        # Create synthetic QMouseEvent. Different PySide builds expect slightly different constructors,
+        # so try the 7-arg form first, then fall back.
+        try:
+            fake = QMouseEvent(
+                mtype,
+                local_pos,
+                window_pos,
+                screen_pos,
+                button,
+                buttons,
+                event.modifiers()
+            )
+        except TypeError:
+            # fallback: (type, localPos, screenPos, button, buttons, modifiers)
+            fake = QMouseEvent(
+                mtype,
+                local_pos,
+                screen_pos,
+                button,
+                buttons,
+                event.modifiers()
+            )
+
+        # Dispatch through QGraphicsView.event so normal Qt machinery creates QGraphicsSceneMouseEvent
+        if mtype == QEvent.MouseButtonPress:
+            super().mousePressEvent(fake)
+        elif mtype == QEvent.MouseMove:
+            super().mouseMoveEvent(fake)
+        elif mtype == QEvent.MouseButtonRelease:
+            super().mouseReleaseEvent(fake)
+            
         event.accept()
 
     def event(self, event):
-        """
-        Fängt Tablet-Events ab, bevor Qt sie künstlich in Maus-Events umwandelt.
-        Dadurch kein Delay und kein "Linie aus Ecke"-Bug.
-        """
+        # catch raw tablet events early and handle them (prevents Qt creating mouse events)
         t = event.type()
         if t in (QEvent.TabletPress, QEvent.TabletMove, QEvent.TabletRelease):
             self.tabletEvent(event)
@@ -106,15 +176,9 @@ class ViewGraphicsView(QGraphicsView):
             zoomInFactor = 1.15
             zoomOutFactor = 1 / zoomInFactor
             current_scale = self.transform().m11()
-
-            if event.angleDelta().y() > 0:
-                factor = zoomInFactor
-            else:
-                factor = zoomOutFactor
-
+            factor = zoomInFactor if event.angleDelta().y() > 0 else zoomOutFactor
             new_scale = current_scale * factor
 
-            # Limits
             if new_scale < self._min_scale:
                 factor = self._min_scale / current_scale
             elif new_scale > self._max_scale:

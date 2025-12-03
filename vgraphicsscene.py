@@ -11,7 +11,6 @@ from drawCommand import DrawCommand
 # ----------------- Safe Pixmap Item -----------------
 class SafePixmapItem(QGraphicsPixmapItem):
     def shape(self):
-        # Rechteck basiertes Shape → sicher, schnell, keine QPoint/Sequence Fehler
         path = QPainterPath()
         path.addRect(self.boundingRect())
         return path
@@ -46,6 +45,9 @@ class ViewGraphicsScene(QGraphicsScene):
         self._major_grid_color = QColor(120, 120, 120, 60)
         self._tile_size = self._grid_size * 8
         self._create_grid_tile()
+
+
+
     # ----------------- Grid -----------------
     def _create_grid_tile(self):
         size = self._tile_size
@@ -113,12 +115,14 @@ class ViewGraphicsScene(QGraphicsScene):
         if self.drawing_enabled and event.button() == Qt.LeftButton:
             self._pre_pixmap = self.canvas_pixmap.copy()
             self.last_pos = event.scenePos()
-        return super().mousePressEvent(event)
+            return
+        super().mousePressEvent(event)
     def mouseMoveEvent(self, event):
         if self.drawing_enabled and self.last_pos is not None:
             self._draw_line(self.last_pos, event.scenePos())
             self.last_pos = event.scenePos()
-        return super().mouseMoveEvent(event)
+            return
+        super().mouseMoveEvent(event)
     def mouseReleaseEvent(self, event):
         if self.drawing_enabled and event.button() == Qt.LeftButton:
             self.last_pos = None
@@ -126,82 +130,14 @@ class ViewGraphicsScene(QGraphicsScene):
             if self._pre_pixmap is not None:
                 self.undo_stack.push(PixmapCommand(self.canvas_item, self._pre_pixmap, post))
             self._pre_pixmap = None
-        return super().mouseReleaseEvent(event)
+            return
+        super().mouseReleaseEvent(event)
     # ----------------- Tablet Events -----------------
     def tabletEvent(self, event):
-        """
-        Robuste Tablet-Event-Verarbeitung:
-        - Versucht verschiedene Tablet-Position-APIs (position, posF, pos)
-        - Wandelt QPoint / QPointF sauber in Scene-Koordinaten um
-        - Zeichnet nur, wenn drawing_enabled aktiv ist
-        """
-        # Sicherstellen, dass wir eine View haben
-        views = self.views()
-        if not views:
-            event.ignore()
-            return
-        view = views[0]
-        # --- Position holen: versuche mehrere Getter in Reihenfolge der Präferenz ---
-        pos = None
-        # 1) event.position() -> Qt6.5+ high-resolution QPointF
-        try:
-            p = event.position()  # häufig ein QPointF
-        except Exception:
-            p = None
-        # 2) fallback posF()
-        if p is None:
-            try:
-                p = event.posF()
-            except Exception:
-                p = None
-        # 3) fallback pos() -> QPoint (integers) (ältere APIs / manche Plattformen)
-        if p is None:
-            try:
-                p = event.pos()
-            except Exception:
-                p = None
-        # Wenn wir immer noch nichts haben: ignoriere Event
-        if p is None:
-            event.ignore()
-            return
-        # p kann QPointF oder QPoint sein; mapToScene erwartet QPointF oder x,y
-        try:
-            # Wenn p hat x() und y() (QPoint oder QPointF), mapToScene(x, y) sicher verwenden
-            pos = view.mapToScene(p.x(), p.y())
-        except Exception:
-            # letzter Versuch: falls p bereits QPointF und mapToScene akzeptiert Objekt
-            try:
-                pos = view.mapToScene(p)
-            except Exception:
-                event.ignore()
-                return
-        # --- Wenn nicht im Zeichnen-Modus: Event weiterreichen / ignorieren ---
-        # Wir wollen Hover / Tablet-Proximity nicht blockieren, daher nur im
-        # aktiven Zeichenmodus selber zeichnen.
-        if not self.drawing_enabled:
-            event.ignore()
-            return
-        t = event.type()
-        if t == QEvent.TabletPress:
-            self._pre_pixmap = self.canvas_pixmap.copy()
-            self.last_pos = pos
-            event.accept()
-            return
-        if t == QEvent.TabletMove:
-            if self.last_pos is not None:
-                self._draw_line(self.last_pos, pos)
-                self.last_pos = pos
-            event.accept()
-            return
-        if t == QEvent.TabletRelease:
-            self.last_pos = None
-            post = self.canvas_pixmap.copy()
-            if self._pre_pixmap is not None:
-                self.undo_stack.push(PixmapCommand(self.canvas_item, self._pre_pixmap, post))
-            self._pre_pixmap = None
-            event.accept()
-            return
-        event.ignore()
+        # Niemals Tablet-Events hier behandeln!
+        # Sie wurden im View bereits in MouseEvents umgewandelt.
+        # Scene darf sie weder ignorieren noch akzeptieren.
+        return
     # ----------------- Draw Routine -----------------
     def _draw_line(self, p1, p2):
         painter = QPainter(self.canvas_pixmap)

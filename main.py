@@ -1,4 +1,3 @@
-
 import sys 
 from PySide6.QtWidgets import QApplication 
 from mainwindow import MainWindow 
@@ -13,4 +12,9 @@ if __name__ == "__main__":
     window.show() 
     sys.exit(app.exec())
 
+"""Bilder hinzufügen und Dateien hinufügen"""
+
+""""Notifications wenn das Programm geschlossen ist"""
+
+"""Sachen speichern"""
 
