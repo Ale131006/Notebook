@@ -11,6 +11,8 @@ class ViewGraphicsView(QGraphicsView):
         self.setAttribute(Qt.WA_TabletTracking, True)
         self.setMouseTracking(True)
 
+        self.setAcceptDrops(True)
+
         # Panning
         self._panning = False
         self._pan_start = None
@@ -188,6 +190,44 @@ class ViewGraphicsView(QGraphicsView):
             event.accept()
         else:
             super().wheelEvent(event)
+
+    # Drag & Drop support (Datei ins View ziehen)
+def dragEnterEvent(self, event):
+    mime = event.mimeData()
+    if mime.hasUrls() or mime.hasImage():
+        event.acceptProposedAction()
+    else:
+        event.ignore()
+
+def dropEvent(self, event):
+    mime = event.mimeData()
+    scene = self.scene()
+    if not scene:
+        event.ignore()
+        return
+
+    # drop position in scene coords
+    pos = self.mapToScene(event.position().toPoint() if hasattr(event, "position") else event.pos())
+
+    # Dateien
+    if mime.hasUrls():
+        for url in mime.urls():
+            if url.isLocalFile():
+                scene.paste_file(url.toLocalFile(), view=self, at_scene_pos=pos)
+                # for simplicity only first file -> break
+                break
+        event.acceptProposedAction()
+        return
+
+    # Image data
+    if mime.hasImage():
+        # fallback to scene.paste_from_clipboard
+        scene.paste_from_clipboard(view=self, at_scene_pos=pos)
+        event.acceptProposedAction()
+        return
+
+    event.ignore()
+
 
 
 # ----------------- SafeShapeMixin -----------------

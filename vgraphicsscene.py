@@ -1,12 +1,14 @@
 
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsPixmapItem
+from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsPixmapItem, QApplication
 from PySide6.QtGui import (
     QWheelEvent, QBrush, QPixmap, QPainter, QPainterPath, QPen, QTransform,
-    QColor, QTextCursor, QUndoCommand, QTabletEvent
+    QColor, QTextCursor, QUndoCommand, QTabletEvent, QImage
 )
-from PySide6.QtCore import Qt, QRectF, QSize, QTimer, QEvent
+from PySide6.QtPdf import QPdfDocument
+from PySide6.QtCore import Qt, QRectF, QSize, QTimer, QEvent, QUrl, QPointF
 from canvastextitem import CanvasTextItem
 from drawCommand import DrawCommand
+import os
 
 # ----------------- Safe Pixmap Item -----------------
 class SafePixmapItem(QGraphicsPixmapItem):
@@ -14,6 +16,64 @@ class SafePixmapItem(QGraphicsPixmapItem):
         path = QPainterPath()
         path.addRect(self.boundingRect())
         return path
+    
+
+
+
+
+# ----------------- GraphicsFileItem (movable image/file) -----------------
+class GraphicsFileItem(QGraphicsPixmapItem):
+    """Ein simples QGraphicsPixmapItem das verschiebbar und auswählbar ist
+       und optional den Originalpfad speichert."""
+    def __init__(self, pixmap, file_path: str | None = None):
+        super().__init__(pixmap)
+        from PySide6.QtWidgets import QGraphicsItem
+        self.setFlags(
+            QGraphicsItem.ItemIsSelectable |
+            QGraphicsItem.ItemIsMovable |
+            QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self.file_path = file_path
+        if file_path:
+            self.setToolTip(os.path.basename(file_path))
+
+    # ----------------- Clipboard / Paste support -----------------
+    def _cap_pixmap(pix: 'QPixmap', max_dim=1200):
+        """Skaliere große Bilder runter (vermeidet speicher- und rendering-probleme)."""
+        w = pix.width()
+        h = pix.height()
+        if max(w, h) <= max_dim:
+            return pix
+        if w >= h:
+            new_w = max_dim
+            new_h = int(h * (max_dim / w))
+        else:
+            new_h = max_dim
+            new_w = int(w * (max_dim / h))
+        return pix.scaled(new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    
+    def mouseDoubleClickEvent(self, event):
+        """Öffnet die Originaldatei, wenn es ein PDF ist."""
+        if hasattr(self, "file_path") and isinstance(self.file_path, str):
+            if self.file_path.lower().endswith(".pdf"):
+                import os, subprocess, sys
+
+                path = self.file_path
+
+                if sys.platform.startswith("win"):
+                    os.startfile(path)
+                elif sys.platform.startswith("darwin"):
+                    subprocess.Popen(["open", path])
+                else:
+                    subprocess.Popen(["xdg-open", path])
+
+        super().mouseDoubleClickEvent(event)
+
+
+
+
+
+
 
 # ----------------- View Graphics Scene -----------------
 class ViewGraphicsScene(QGraphicsScene):
@@ -88,11 +148,212 @@ class ViewGraphicsScene(QGraphicsScene):
                 y += ts.height()
             x += ts.width()
     # ----------------- Text Item -----------------
+
+        # ----------------- Clipboard / File paste helpers -----------------
+    def _cap_pixmap(self, pix: QPixmap, max_dim=1200) -> QPixmap:
+        """Skaliere große Bilder runter (vermeidet Speicher-/Rendering-Probleme)."""
+        w = pix.width()
+        h = pix.height()
+        if max(w, h) <= max_dim:
+            return pix
+        if w >= h:
+            new_w = max_dim
+            new_h = int(h * (max_dim / w))
+        else:
+            new_h = max_dim
+            new_w = int(w * (max_dim / h))
+        return pix.scaled(new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    def paste_from_clipboard(self, view=None, at_scene_pos: 'QPointF | None' = None):
+        """
+        Fügt aus der Zwischenablage ein:
+          - Bild (wenn verfügbar)
+          - lokale Datei-URL (erste lokale Datei)
+        Wenn view gegeben, positioniert an der View-Mitte (oder an at_scene_pos).
+        Rückgabe: das eingefügte GraphicsFileItem oder None.
+        """
+        cb = QApplication.clipboard()
+        mime = cb.mimeData()
+
+        # 1) Image direkt aus clipboard
+        if mime.hasImage():
+            img = cb.image()
+            if isinstance(img, QImage):
+                pix = QPixmap.fromImage(img)
+            else:
+                # Fallback: versuche loadFromData
+                pix = QPixmap()
+                try:
+                    pix.loadFromData(img)
+                except Exception:
+                    return None
+            pix = self._cap_pixmap(pix)
+            return self._insert_pixmap(pix, view, at_scene_pos, file_path=None)
+
+        # 2) URLs (Dateien) — nehme erste lokale Datei
+        if mime.hasUrls():
+            for url in mime.urls():
+                if url.isLocalFile():
+                    path = url.toLocalFile()
+                    return self.paste_file(path, view, at_scene_pos)
+
+        # 3) nichts gefunden
+        return None
+
+    def paste_file(self, path: str, view=None, at_scene_pos: 'QPointF | None' = None):
+        """
+        Fügt eine lokale Datei ein. Unterstützt Bilder direkt.
+        PDFs werden als Vorschau (erste Seite) gerendert, Originalpfad bleibt erhalten.
+        """
+        if not os.path.exists(path):
+            return None
+
+        lower = path.lower()
+
+        # ------------------------------
+        # 1) Bilder direkt einfügen
+        # ------------------------------
+        if lower.endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff")):
+            pix = QPixmap(path)
+            if pix.isNull():
+                return None
+            pix = self._cap_pixmap(pix)
+            return self._insert_pixmap(pix, view, at_scene_pos, file_path=path)
+
+        # ------------------------------
+        # 2) PDFs rendern (erste Seite)
+        # ------------------------------
+        # PDF als Bild einfügen
+        # PDF laden und rendern (neue PySide6 API)
+       # --- PDF: rendern (robust für verschiedene PySide6-Versionen) ---
+        if lower.endswith(".pdf"):
+            try:
+                from PySide6.QtPdf import QPdfDocument, QPdfDocumentRenderOptions
+                from PySide6.QtCore import QSize
+                from PySide6.QtGui import QImage
+            except Exception:
+                # QtPdf nicht verfügbar
+                print("QtPdf nicht verfügbar")
+                return None
+
+            doc = QPdfDocument(self)
+            status = doc.load(path)
+
+            # Falls kein Seiteninhalt -> abbrechen
+            if doc.pageCount() == 0:
+                doc.deleteLater()
+                print("PDF hat keine Seiten oder konnte nicht geladen werden.")
+                return None
+
+            page = 0
+            # bestimme physikalische Page-Grösse (Punktgröße), falls verfügbar
+            try:
+                page_size = doc.pagePointSize(page)  # QSizeF oder QSize-like
+                pw = int(page_size.width())
+                ph = int(page_size.height())
+            except Exception:
+                # fallback auf Standard-Thumbnail-Grösse
+                pw, ph = 800, 1100
+
+            # skaliere etwas höher auflösung zum Schärfen
+            scale = 2.0
+            target_w = max(1, int(pw * scale))
+            target_h = max(1, int(ph * scale))
+
+            opts = QPdfDocumentRenderOptions()
+
+            # 1) Versuch: neue Signatur -> render(page, QSize, options) -> QImage zurück
+            image = None
+            try:
+                image = doc.render(page, QSize(target_w, target_h), opts)
+                # doc.render liefert in neueren Builds ein QImage
+                if not isinstance(image, QImage):
+                    # falls etwas anderes zurückkam, setzen wir image auf None damit wir fallback probieren
+                    image = None
+            except TypeError:
+                # Signatur passt nicht -> fallback unten
+                image = None
+            except Exception as e:
+                print("PDF render (QSize) Fehlgeschlagen:", e)
+                image = None
+
+            # 2) Fallback: ältere Signatur render(page, QImage, opts) -> bool
+            if image is None:
+                try:
+                    img = QImage(target_w, target_h, QImage.Format_ARGB32)
+                    img.fill(Qt.white)
+                    ok = doc.render(page, img, opts)  # ältere API erwartet QImage
+                    if ok:
+                        image = img
+                    else:
+                        image = None
+                except Exception as e:
+                    print("PDF render (QImage) Fallback fehlgeschlagen:", e)
+                    image = None
+
+            if image is None:
+                doc.deleteLater()
+                print("PDF-Seite konnte nicht gerendert werden.")
+                return None
+
+            # In Pixmap umwandeln und evtl skalieren (cap)
+            pix = QPixmap.fromImage(image)
+            pix = GraphicsFileItem._cap_pixmap(pix, max_dim=1600)
+
+            doc.deleteLater()
+            return self._insert_pixmap(pix, view, at_scene_pos, file_path=path)
+
+
+
+        # ------------------------------
+        # 3) Andere Dateien → Platzhalter
+        # ------------------------------
+        txt = os.path.basename(path)
+        w, h = 300, 100
+        placeholder = QPixmap(w, h)
+        placeholder.fill(QColor(240, 240, 240))
+
+        painter = QPainter(placeholder)
+        painter.setPen(QColor(40, 40, 40))
+        font = painter.font()
+        font.setPointSize(10)
+        painter.setFont(font)
+        painter.drawText(placeholder.rect(), Qt.AlignCenter, txt)
+        painter.end()
+
+        pix = self._cap_pixmap(placeholder, max_dim=800)
+        return self._insert_pixmap(pix, view, at_scene_pos, file_path=path)
+
+
+    def _insert_pixmap(self, pix: QPixmap, view=None, at_scene_pos: 'QPointF | None' = None, file_path: str | None = None):
+        """Erstellt ein GraphicsFileItem, fügt es zur Scene hinzu und positioniert es."""
+        item = GraphicsFileItem(pix, file_path)
+        item.setZValue(10)
+        self.addItem(item)
+
+        # default position: explizit gesetzt oder in die Mitte der View
+        if at_scene_pos is not None:
+            item.setPos(at_scene_pos)
+        else:
+            if view is None:
+                views = self.views()
+                view = views[0] if views else None
+            if view is not None:
+                center = view.mapToScene(view.viewport().rect().center())
+                item.setPos(center.x() - pix.width() / 2, center.y() - pix.height() / 2)
+            else:
+                item.setPos(0, 0)
+
+        return item
+
+
     def addTextItem(self, pos):
         item = CanvasTextItem("", start_edit=True)
         item.setPos(pos)
         self.addItem(item)
+        item.setFocus(Qt.FocusReason.ActiveWindowFocusReason)  # <-- Fokus sofort setzen
         return item
+    
     def mouseDoubleClickEvent(self, event):
         print("Scene Double Click at", event.scenePos())
         clicked_item = self.itemAt(event.scenePos(), QTransform())
@@ -105,6 +366,7 @@ class ViewGraphicsScene(QGraphicsScene):
         elif isinstance(clicked_item, CanvasTextItem):
             print("Activating edit mode for clicked text item")
             clicked_item.activate_edit_mode()
+            clicked_item.setFocus(Qt.FocusReason.ActiveWindowFocusReason)  # <-- Fokus setzen
         super().mouseDoubleClickEvent(event)
         print("fertig")
     # ----------------- Drawing Mode -----------------
@@ -165,6 +427,24 @@ class ViewGraphicsScene(QGraphicsScene):
         self.pen_width = width
     def set_eraser_mode(self, enabled):
         self.eraser_enabled = enabled
+
+    def keyPressEvent(self, event):
+        # Prüfen, ob aktuell ein TextItem den Fokus hat
+        focus_item = self.focusItem()
+        if isinstance(focus_item, CanvasTextItem):
+            # Key-Events an TextItem weitergeben
+            super().keyPressEvent(event)
+            return
+
+        # Keine TextItems aktiv → lösche normale Items
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            for item in self.selectedItems():
+                if not isinstance(item, CanvasTextItem):
+                    self.removeItem(item)
+        else:
+            super().keyPressEvent(event)
+
+
 
 # ----------------- PixmapCommand (Undo/Redo) -----------------
 class PixmapCommand(QUndoCommand):

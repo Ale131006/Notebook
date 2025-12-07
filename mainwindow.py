@@ -108,6 +108,13 @@ class MainWindow(QMainWindow):
         self._deadline_timer.timeout.connect(self._check_deadlines)
         self._deadline_timer.start()
 
+        
+        # Paste (Ctrl+V)
+        act_paste = QAction("Paste", self)
+        act_paste.setShortcut("Ctrl+V")
+        act_paste.triggered.connect(self._on_paste_triggered)
+        toolbar.addAction(act_paste)
+
 
         # Erstes Notebook erzeugen
         self.add_notebook(initial=True)
@@ -276,3 +283,15 @@ class MainWindow(QMainWindow):
                         QMessageBox.information(self, title, message)
                     item._deadline_notified = True
                     item.update()
+
+    def _on_paste_triggered(self):
+        """Wird von Ctrl+V ausgelöst. Leitet an aktuelle Scene weiter."""
+        if not self.current_scene:
+            # falls noch kein Notebook, versuche view.scene()
+            scene = self.view.scene()
+        else:
+            scene = self.current_scene
+        if not scene:
+            return
+        scene.paste_from_clipboard(view=self.view)
+
