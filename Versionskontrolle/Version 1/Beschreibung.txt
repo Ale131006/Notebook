@@ -1,0 +1,10 @@
+Dateien: mainwindow.py, vgraphicsscene.py (sehr einfache Variante), evtl. vgraphicsview.py nicht nötig
+Beschreibung:
+
+Minimal-QMainWindow mit QGraphicsView und QGraphicsScene.
+
+Szene enthält ein paar Rechtecke (addRect) als Beispielobjekte.
+
+Rechtecke sind ItemIsMovable gesetzt — erstes Ziel: bewegliche Objekte, Basis für OOP (viele Instanzen).
+
+Erste zoom_in / zoom_out Methoden in MainWindow.

@@ -9,6 +9,21 @@ from vgraphicsscene import ViewGraphicsScene
 from vgraphicsview import ViewGraphicsView
 import datetime
 import notify
+import os
+import json
+import shutil
+import uuid
+import sys
+from pathlib import Path
+from PySide6.QtCore import QStandardPaths, QPointF
+from PySide6.QtGui import QImage, QPainter, QPixmap
+from canvastextitem import CanvasTextItem
+# mainwindow.py (oben)
+from pathlib import Path
+import uuid
+from database_manager import DatabaseManager
+from serializer import serialize_scene, deserialize_scene
+
 
 
 class MainWindow(QMainWindow):
@@ -20,6 +35,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Smartbook")
         self.setMinimumSize(1000, 700)
         self.undo_stack = QUndoStack(self)
+
+        appdata = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+        self.workspace_dir = Path(appdata) / "SmartbookWorkspace"
+        self.notebooks_dir = self.workspace_dir / "notebooks"
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self.notebooks_dir.mkdir(parents=True, exist_ok=True)
+        # DATABASE initialisieren
+        db_path = self.workspace_dir / "smartbook.db"
+        self.db = DatabaseManager(db_path)
+
 
         # ---------------------------------
         # TOOLBAR OBEN
@@ -51,6 +76,10 @@ class MainWindow(QMainWindow):
         self.action_eraser.setCheckable(True)
         self.action_eraser.triggered.connect(self.toggle_eraser)
         toolbar.addAction(self.action_eraser)
+
+        self.pen_width = 3              # deine normale Stiftdicke
+        self._base_pen_width = self.pen_width
+
 
         # Undo / Redo
         act_undo = QAction("↩️ Undo", self)
@@ -116,8 +145,71 @@ class MainWindow(QMainWindow):
         toolbar.addAction(act_paste)
 
 
+        self._import_existing_folders_to_db()
+        self._load_notebooks_from_db()
+        self.reset_view_to_top_left()
+
         # Erstes Notebook erzeugen
-        self.add_notebook(initial=True)
+        #self.add_notebook(initial=True)
+
+    
+    def _load_notebooks_from_db(self):
+        """Lädt gespeicherte Notebooks aus der DB; falls keine vorhanden: lege ein neues an."""
+        rows = self.db.list_notebooks()
+        if not rows:
+            # kein Eintrag -> neues initiales Notebook (wie vorher)
+            self.add_notebook(initial=True)
+            # nach add_notebook speichern wir den neuen Notizbucheintrag
+            nb = self.notebooks[-1]
+            nb_id = nb.get("id")
+            if not nb_id:
+                nb_id = f"nb_{uuid.uuid4().hex}"
+                nb["id"] = nb_id
+            # create DB entry
+            self.db.create_notebook(nb_id, nb["title"], nb["path"], "{}")
+            return
+
+        # sonst: erstelle für jeden DB-Eintrag die Scene und lade scene_data
+        for r in rows:
+            nb_id = r["id"]
+            title = r["title"] or "Notizbuch"
+            path = r["path"]
+            scene_json = r.get("scene_json", "{}")
+            # ensure folder exists
+            Path(path).mkdir(parents=True, exist_ok=True)
+
+            scene = ViewGraphicsScene(self, width=5000, height=5000)
+            scene.setBackgroundBrush(QBrush(Qt.darkGray))
+            # create title item like in add_notebook
+            from PySide6.QtGui import QFont
+            title_item = CanvasTextItem(title, start_edit=False)
+            font = QFont("Arial", 28)
+            font.setUnderline(True)
+            title_item.setFont(font)
+            title_item.setDefaultTextColor(Qt.lightGray)
+            title_item.setPos(20, 20)
+            scene.addItem(title_item)
+
+            # deserialize scene content (if any)
+            try:
+                deserialize_scene(scene, scene_json, path, main_window=self)
+            except Exception as e:
+                print("Fehler beim Deserialisieren:", e)
+
+            self.notebooks.append({
+                "id": nb_id,
+                "title": title,
+                "scene": scene,
+                "title_item": title_item,
+                "path": path,
+                "dirty": False
+            })
+            self.list_notebooks.addItem(title)
+
+        # set first Notebook active
+        if self.notebooks:
+            self.list_notebooks.setCurrentRow(0)
+
 
     # ============================================================
     # NEUES NOTIZBUCH
@@ -131,21 +223,92 @@ class MainWindow(QMainWindow):
                 return
 
         scene = ViewGraphicsScene(self, width=5000, height=5000)
+        scene.setBackgroundBrush(QBrush(Qt.darkGray))
 
-        # Titel-Textfeld im Canvas
-        title_item = scene.addText(title)
+
+        # Titel als CanvasTextItem (wird von save/metadata erkannt)
         font = QFont("Arial", 28)
         font.setUnderline(True)
+        title_item = CanvasTextItem(title, start_edit=False)
         title_item.setFont(font)
         title_item.setDefaultTextColor(Qt.lightGray)
         title_item.setPos(20, 20)
+        scene.addItem(title_item)
+
 
         self.view.setScene(scene)
         self.view.centerOn(0, 0)
 
-        self.notebooks.append({"title": title, "scene": scene, "title_item": title_item})
+
+        # use UUID instead of notebook_001 to be robust
+        nb_uuid = f"nb_{uuid.uuid4().hex}"
+        nb_path = self.notebooks_dir / nb_uuid
+        nb_path.mkdir(parents=True, exist_ok=True)
+
+        nb = {
+            "id": nb_uuid,
+            "title": title,
+            "scene": scene,
+            "title_item": title_item,
+            "path": str(nb_path),
+            "dirty": True
+        }
+        self.notebooks.append(nb)
         self.list_notebooks.addItem(title)
         self.list_notebooks.setCurrentRow(len(self.notebooks) - 1)
+
+        # write new notebook skeleton to DB
+        try:
+            self.db.create_notebook(nb_uuid, title, str(nb_path), "{}")
+            nb["dirty"] = False
+        except Exception as e:
+            print("DB create_notebook failed:", e)
+
+        assets_dir = Path(nb_path) / "assets" / "images"
+        assets_dir.mkdir(parents=True, exist_ok=True)
+
+
+    def save_notebook_for_scene(self, scene):
+        """Find notebook dict, serialize scene, save canvas image & update DB."""
+        # find notebook
+        nb = None
+        for n in self.notebooks:
+            if n.get("scene") is scene:
+                nb = n
+                break
+        if nb is None:
+            return
+
+        nb_path = Path(nb["path"])
+        try:
+            scene_json = serialize_scene(scene, nb_path)
+            # mark not dirty after successful write
+            self.db.update_notebook(nb["id"], title=nb["title"], scene_json=scene_json)
+            nb["dirty"] = False
+        except Exception as e:
+            import traceback
+            print("[save] Fehler beim Speichern des Notebooks:", e)
+            traceback.print_exc()
+
+    def _import_existing_folders_to_db(self):
+        # scan notebooks_dir for subfolders that are not in DB yet
+        existing_db_paths = {r["path"] for r in self.db.list_notebooks()}
+        for child in self.notebooks_dir.iterdir():
+            if child.is_dir() and str(child) not in existing_db_paths:
+                # try to extract title from a "title.txt" or fallback to folder name
+                title = child.name
+                # create id
+                nb_uuid = f"nb_{uuid.uuid4().hex}"
+                # if folder contains a canvas.png or scene.json, optionally read them
+                scene_json = "{}"
+                scene_json_path = child / "scene.json"
+                if scene_json_path.exists():
+                    try:
+                        scene_json = scene_json_path.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+                # write db entry
+                self.db.create_notebook(nb_uuid, title, str(child), scene_json)
 
     # ============================================================
     # NOTIZBUCH WECHSELN
@@ -156,6 +319,7 @@ class MainWindow(QMainWindow):
         self.current_scene = self.notebooks[index]["scene"]
         self.view.setScene(self.current_scene)
         self.current_scene.set_drawing_mode(self.action_draw.isChecked())
+        self.reset_view_to_top_left()
 
     # ============================================================
     # CONTEXT MENU: UMBENENNEN / LÖSCHEN
@@ -177,31 +341,83 @@ class MainWindow(QMainWindow):
 
     def rename_notebook(self, item):
         row = self.list_notebooks.row(item)
+        nb = self.notebooks[row]
+
         new_title, ok = QInputDialog.getText(
-            self, "Notizbuch umbenennen", "Neuer Titel:", text=item.text()
+            self,
+            "Notizbuch umbenennen",
+            "Neuer Titel:",
+            text=nb["title"]
         )
-        if ok and new_title.strip():
-            item.setText(new_title)
-            self.notebooks[row]["title"] = new_title
-            title_item = self.notebooks[row]["title_item"]
+
+        if not ok or not new_title.strip():
+            return
+
+        # 1️⃣ Sidebar-Text ändern
+        item.setText(new_title)
+
+        # 2️⃣ Notebook-Metadaten ändern
+        nb["title"] = new_title
+
+        # 3️⃣ Canvas-Titel ändern
+        title_item = nb.get("title_item")
+        if title_item:
             title_item.setPlainText(new_title)
+
+        # 4️⃣ In DB aktualisieren
+        try:
+            self.db.update_notebook(
+                nb["id"],
+                title=new_title,
+                scene_json=None  # Scene bleibt gleich
+            )
+        except Exception as e:
+            print("DB update_notebook failed:", e)
+
+        nb["dirty"] = False
 
     def delete_notebook(self, item):
         row = self.list_notebooks.row(item)
+        nb = self.notebooks[row]
+
+        title = nb["title"]
+        nb_id = nb.get("id")
+        nb_path = nb.get("path")
+
         if QMessageBox.question(
             self,
             "Notizbuch löschen",
-            f"Soll das Notizbuch '{item.text()}' wirklich gelöscht werden?",
+            f"Soll das Notizbuch '{title}' wirklich gelöscht werden?",
             QMessageBox.Yes | QMessageBox.No
-        ) == QMessageBox.Yes:
-            self.list_notebooks.takeItem(row)
-            del self.notebooks[row]
+        ) != QMessageBox.Yes:
+            return
 
+        # 1️⃣ Aus DB löschen
+        if nb_id:
+            try:
+                self.db.delete_notebook(nb_id)
+            except Exception as e:
+                print("DB delete_notebook failed:", e)
+
+        # 2️⃣ Ordner löschen
+        if nb_path and os.path.exists(nb_path):
+            try:
+                shutil.rmtree(nb_path)
+            except Exception as e:
+                print("Ordner konnte nicht gelöscht werden:", e)
+
+        # 3️⃣ Aus UI & Speicher entfernen
+        self.list_notebooks.takeItem(row)
+        del self.notebooks[row]
+
+        # 4️⃣ Neues aktives Notebook setzen
         if self.notebooks:
             self.list_notebooks.setCurrentRow(0)
         else:
             empty_scene = ViewGraphicsScene(self, 5000, 5000)
             self.view.setScene(empty_scene)
+            self.current_scene = None
+
 
     # ============================================================
     # WERKZEUGE
@@ -220,14 +436,23 @@ class MainWindow(QMainWindow):
             self, "Strichstärke", "Neue Dicke:", 3, 1, 40, 1
         )
         if ok and self.current_scene:
+            self._base_pen_width = thickness      # 🔥 WICHTIG
+            self.pen_width = thickness
             self.current_scene.set_pen_width(thickness)
 
     def toggle_eraser(self, enabled):
         if not self.current_scene:
             return
+
         self.current_scene.set_eraser_mode(enabled)
+        self.current_scene.drawing_enabled = True
+
         if enabled:
-            self.current_scene.drawing_enabled = True
+            # 🧽 Eraser = 5× normale Stiftdicke
+            self.current_scene.set_pen_width(self._base_pen_width * 5)
+        else:
+            # ✏️ Zurück zur normalen Stiftdicke
+            self.current_scene.set_pen_width(self._base_pen_width)
 
     def _check_deadlines(self):
         """Periodisch prüfen: alle Text-Items updaten und bei Ablauf / Vorwarnung benachrichtigen."""
@@ -244,8 +469,11 @@ class MainWindow(QMainWindow):
                 # erzwinge Repaint (Overlay aktualisieren)
                 try:
                     item.update()
-                except Exception:
-                    pass
+                except Exception as e:
+                    import traceback
+                    print("[save] ERROR in _save_canvas_image:")
+                    traceback.print_exc()
+
 
                 if item.deadline is None:
                     continue
@@ -294,4 +522,30 @@ class MainWindow(QMainWindow):
         if not scene:
             return
         scene.paste_from_clipboard(view=self.view)
+
+    def closeEvent(self, event):
+        # save all notebooks synchronously
+        try:
+            for nb in list(self.notebooks):
+                scene = nb.get("scene")
+                if scene:
+                    self.save_notebook_for_scene(scene)
+        except Exception as e:
+            import traceback
+            print("[save] ERROR in _save_canvas_image:")
+            traceback.print_exc()
+
+        super().closeEvent(event)
+
+    def reset_view_to_top_left(self):
+        self.view.setTransformationAnchor(QGraphicsView.NoAnchor)
+        self.view.setResizeAnchor(QGraphicsView.NoAnchor)
+
+        self.view.resetTransform()
+        self.view.centerOn(0, 0)
+
+        self.view.horizontalScrollBar().setValue(0)
+        self.view.verticalScrollBar().setValue(0)
+
+
 

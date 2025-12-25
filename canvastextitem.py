@@ -6,12 +6,15 @@ from PySide6.QtGui import QPen, QColor, QBrush, QFont, QTextCursor, QUndoCommand
 from PySide6.QtCore import QRectF, Qt, QPointF, QDateTime, QTimer
 import datetime
 import notify
+import uuid
 
 
 
 class CanvasTextItem(QGraphicsTextItem):
     def __init__(self, text="", parent=None, start_edit=True):
         super().__init__(text, parent)
+        self.note_id = uuid.uuid4().hex
+
 
         self.setFlags(
             QGraphicsItem.ItemIsSelectable |
@@ -71,6 +74,11 @@ class CanvasTextItem(QGraphicsTextItem):
         if self._old_text != self._new_text:
             cmd = TextEditCommand(self, self._old_text, self._new_text)
             self.scene().undo_stack.push(cmd)
+            # mark scene dirty
+            try:
+                self.scene().mark_dirty()
+            except Exception:
+                pass
 
         super().focusOutEvent(event)
 
@@ -157,6 +165,11 @@ class CanvasTextItem(QGraphicsTextItem):
         self._deadline_pre_notified = False
         self._deadline_notified = False
         self.update()
+        try:
+            self.scene().mark_dirty()
+        except Exception:
+            pass
+
 
     def clear_deadline(self):
         self.deadline = None
@@ -171,6 +184,10 @@ class CanvasTextItem(QGraphicsTextItem):
                 pass
             self._deadline_task_name = None
         self.update()
+        try:
+            self.scene().mark_dirty()
+        except Exception:
+            pass
 
     def _compute_pre_notify_delta(self) -> datetime.timedelta:
         """Berechnet Vorwarnzeit P = clamp((deadline - set_at)/6, 5min, 1day)."""

@@ -1,11 +1,13 @@
 from PySide6.QtWidgets import QGraphicsView
 from PySide6.QtCore import Qt, QPointF, QEvent
 from PySide6.QtGui import QPainter, QTabletEvent, QMouseEvent
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 
 class ViewGraphicsView(QGraphicsView):
     def __init__(self, scene, width=5000, height=5000, parent=None):
         super().__init__(scene, parent)
+        self.setViewport(QOpenGLWidget())
 
         # Tablet-Tracking aktivieren
         self.setAttribute(Qt.WA_TabletTracking, True)
@@ -20,12 +22,9 @@ class ViewGraphicsView(QGraphicsView):
         # Tablet-down state (für korrekte Buttons bei Move)
         self._tablet_down = False
 
-        # WICHTIG: gute Qualität + flüssiges Zeichnen
-        self.setRenderHints(
-            QPainter.Antialiasing |
-            QPainter.TextAntialiasing |
-            QPainter.SmoothPixmapTransform
-        )
+        self.setRenderHint(QPainter.Antialiasing, False)
+        self.setRenderHint(QPainter.TextAntialiasing, False)
+        self.setRenderHint(QPainter.SmoothPixmapTransform, False)
 
         # Tablet-Stift aktivieren
         self.viewport().setAttribute(Qt.WA_TabletTracking, True)
@@ -44,6 +43,15 @@ class ViewGraphicsView(QGraphicsView):
         self._min_scale = 0.1
         self._max_scale = 2.0
 
+        self.setViewportUpdateMode(QGraphicsView.MinimalViewportUpdate)
+        self.setOptimizationFlag(QGraphicsView.DontSavePainterState, True)
+        self.setOptimizationFlag(QGraphicsView.DontAdjustForAntialiasing, True)
+        self.setCacheMode(QGraphicsView.CacheBackground)
+        self.setRenderHint(QPainter.Antialiasing, False)
+
+        self._pen_active = False
+
+
     # --------------------------------------------------------------
     # TABLET-EVENTS (SURFACE STIFT)
     # --------------------------------------------------------------
@@ -54,6 +62,9 @@ class ViewGraphicsView(QGraphicsView):
         This avoids Qt's built-in tablet->mouse emulation path which can add lag.
         Pressure/tilt are ignored in this conversion (we simulate simple left-button).
         """
+
+        self._pen_active = True
+        #event.accept()
 
         # pick best-available local / window / screen positions (Qt version differences)
         try:
@@ -77,6 +88,8 @@ class ViewGraphicsView(QGraphicsView):
 
         t = event.type()
         if t == QEvent.TabletPress:
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             mtype = QEvent.MouseButtonPress
             button = Qt.LeftButton
             buttons = Qt.LeftButton
@@ -86,6 +99,8 @@ class ViewGraphicsView(QGraphicsView):
             button = Qt.NoButton
             buttons = Qt.LeftButton if self._tablet_down else Qt.NoButton
         elif t == QEvent.TabletRelease:
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             mtype = QEvent.MouseButtonRelease
             button = Qt.LeftButton
             buttons = Qt.NoButton
@@ -163,6 +178,7 @@ class ViewGraphicsView(QGraphicsView):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        self._pen_active = False
         if event.button() == Qt.RightButton:
             self._panning = False
             self.setCursor(Qt.ArrowCursor)
@@ -191,42 +207,42 @@ class ViewGraphicsView(QGraphicsView):
         else:
             super().wheelEvent(event)
 
-    # Drag & Drop support (Datei ins View ziehen)
-def dragEnterEvent(self, event):
-    mime = event.mimeData()
-    if mime.hasUrls() or mime.hasImage():
-        event.acceptProposedAction()
-    else:
+        # Drag & Drop support (Datei ins View ziehen)
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime.hasUrls() or mime.hasImage():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        scene = self.scene()
+        if not scene:
+            event.ignore()
+            return
+
+        # drop position in scene coords
+        pos = self.mapToScene(event.position().toPoint() if hasattr(event, "position") else event.pos())
+
+        # Dateien
+        if mime.hasUrls():
+            for url in mime.urls():
+                if url.isLocalFile():
+                    scene.paste_file(url.toLocalFile(), view=self, at_scene_pos=pos)
+                    # for simplicity only first file -> break
+                    break
+            event.acceptProposedAction()
+            return
+
+        # Image data
+        if mime.hasImage():
+            # fallback to scene.paste_from_clipboard
+            scene.paste_from_clipboard(view=self, at_scene_pos=pos)
+            event.acceptProposedAction()
+            return
+
         event.ignore()
-
-def dropEvent(self, event):
-    mime = event.mimeData()
-    scene = self.scene()
-    if not scene:
-        event.ignore()
-        return
-
-    # drop position in scene coords
-    pos = self.mapToScene(event.position().toPoint() if hasattr(event, "position") else event.pos())
-
-    # Dateien
-    if mime.hasUrls():
-        for url in mime.urls():
-            if url.isLocalFile():
-                scene.paste_file(url.toLocalFile(), view=self, at_scene_pos=pos)
-                # for simplicity only first file -> break
-                break
-        event.acceptProposedAction()
-        return
-
-    # Image data
-    if mime.hasImage():
-        # fallback to scene.paste_from_clipboard
-        scene.paste_from_clipboard(view=self, at_scene_pos=pos)
-        event.acceptProposedAction()
-        return
-
-    event.ignore()
 
 
 

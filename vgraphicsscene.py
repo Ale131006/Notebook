@@ -10,6 +10,11 @@ from canvastextitem import CanvasTextItem
 from drawCommand import DrawCommand
 import os
 
+import uuid, os, shutil, json
+from pathlib import Path
+from PySide6.QtGui import QImage, QPainter
+from uuid import uuid4
+
 # ----------------- Safe Pixmap Item -----------------
 class SafePixmapItem(QGraphicsPixmapItem):
     def shape(self):
@@ -23,19 +28,22 @@ class SafePixmapItem(QGraphicsPixmapItem):
 
 # ----------------- GraphicsFileItem (movable image/file) -----------------
 class GraphicsFileItem(QGraphicsPixmapItem):
-    """Ein simples QGraphicsPixmapItem das verschiebbar und auswählbar ist
-       und optional den Originalpfad speichert."""
-    def __init__(self, pixmap, file_path: str | None = None):
+    def __init__(
+        self,
+        pixmap,
+        file_path: str | None = None,
+        asset_id: str | None = None,
+        original_path: str | None = None   # 👈 NEU
+    ):
         super().__init__(pixmap)
         from PySide6.QtWidgets import QGraphicsItem
         self.setFlags(
             QGraphicsItem.ItemIsSelectable |
-            QGraphicsItem.ItemIsMovable |
-            QGraphicsItem.ItemSendsGeometryChanges
+            QGraphicsItem.ItemIsMovable
         )
-        self.file_path = file_path
-        if file_path:
-            self.setToolTip(os.path.basename(file_path))
+        self.file_path = file_path          # PNG / Bild
+        self.original_path = original_path  # PDF (NEU)
+        self.asset_id = asset_id or uuid.uuid4().hex
 
     # ----------------- Clipboard / Paste support -----------------
     def _cap_pixmap(pix: 'QPixmap', max_dim=1200):
@@ -53,19 +61,15 @@ class GraphicsFileItem(QGraphicsPixmapItem):
         return pix.scaled(new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     
     def mouseDoubleClickEvent(self, event):
-        """Öffnet die Originaldatei, wenn es ein PDF ist."""
-        if hasattr(self, "file_path") and isinstance(self.file_path, str):
-            if self.file_path.lower().endswith(".pdf"):
-                import os, subprocess, sys
-
-                path = self.file_path
-
-                if sys.platform.startswith("win"):
-                    os.startfile(path)
-                elif sys.platform.startswith("darwin"):
-                    subprocess.Popen(["open", path])
-                else:
-                    subprocess.Popen(["xdg-open", path])
+        path = self.original_path or self.file_path
+        if isinstance(path, str) and path.lower().endswith(".pdf"):
+            import os, subprocess, sys
+            if sys.platform.startswith("win"):
+                os.startfile(path)
+            elif sys.platform.startswith("darwin"):
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
 
         super().mouseDoubleClickEvent(event)
 
@@ -81,9 +85,12 @@ class ViewGraphicsScene(QGraphicsScene):
         super().__init__()
         self.main_window = main_window
         self.last_pos = None
+        self._move_counter = 0
         self.undo_stack = main_window.undo_stack
+        self.setSceneRect(0, 0, width, height)
         # Drawing state
-        self.drawing_enabled = False
+        self.drawing = False
+        enabled = False
         self.eraser_enabled = False
         self.pen_color = QColor("white")
         self.pen_width = 3
@@ -105,6 +112,7 @@ class ViewGraphicsScene(QGraphicsScene):
         self._major_grid_color = QColor(120, 120, 120, 60)
         self._tile_size = self._grid_size * 8
         self._create_grid_tile()
+
 
 
 
@@ -172,6 +180,7 @@ class ViewGraphicsScene(QGraphicsScene):
         Wenn view gegeben, positioniert an der View-Mitte (oder an at_scene_pos).
         Rückgabe: das eingefügte GraphicsFileItem oder None.
         """
+
         cb = QApplication.clipboard()
         mime = cb.mimeData()
 
@@ -181,14 +190,39 @@ class ViewGraphicsScene(QGraphicsScene):
             if isinstance(img, QImage):
                 pix = QPixmap.fromImage(img)
             else:
-                # Fallback: versuche loadFromData
                 pix = QPixmap()
-                try:
-                    pix.loadFromData(img)
-                except Exception:
-                    return None
+                pix.loadFromData(img)
+
             pix = self._cap_pixmap(pix)
-            return self._insert_pixmap(pix, view, at_scene_pos, file_path=None)
+
+            # 🔽 NEU: Bild als Datei speichern
+            from uuid import uuid4
+            from pathlib import Path
+
+            mw = self.main_window
+            idx = mw.list_notebooks.currentRow()
+            if idx < 0:
+                return None
+
+            nb_path = Path(mw.notebooks[idx]["path"])
+            img_dir = nb_path / "assets" / "images"
+            img_dir.mkdir(parents=True, exist_ok=True)
+
+            img_name = f"{uuid4().hex}.png"
+            img_path = img_dir / img_name
+            ok = pix.save(str(img_path), "PNG")
+
+            if not ok:
+                print("ERROR: pixmap could not be saved!")
+                return None
+
+            # 🔽 WICHTIG: file_path setzen!
+            return self._insert_pixmap(
+                QPixmap(str(img_path)),
+                view,
+                at_scene_pos,
+                file_path=str(img_path)
+            )
 
         # 2) URLs (Dateien) — nehme erste lokale Datei
         if mime.hasUrls():
@@ -266,6 +300,15 @@ class ViewGraphicsScene(QGraphicsScene):
             image = None
             try:
                 image = doc.render(page, QSize(target_w, target_h), opts)
+                if isinstance(image, QImage):
+                    # 🔥 HIER der entscheidende Fix
+                    fixed = QImage(image.size(), QImage.Format_ARGB32)
+                    fixed.fill(Qt.white)
+                    painter = QPainter(fixed)
+                    painter.drawImage(0, 0, image)
+                    painter.end()
+                    image = fixed
+                print("PDF image format:", image.format())
                 # doc.render liefert in neueren Builds ein QImage
                 if not isinstance(image, QImage):
                     # falls etwas anderes zurückkam, setzen wir image auf None damit wir fallback probieren
@@ -296,15 +339,30 @@ class ViewGraphicsScene(QGraphicsScene):
                 print("PDF-Seite konnte nicht gerendert werden.")
                 return None
 
-            # In Pixmap umwandeln und evtl skalieren (cap)
+            # Pixmap erzeugen
             pix = QPixmap.fromImage(image)
             pix = GraphicsFileItem._cap_pixmap(pix, max_dim=1600)
 
+            # 🔽 PDF-Vorschau als PNG speichern (WICHTIG!)
+            mw = self.main_window
+            idx = mw.list_notebooks.currentRow()
+            nb_path = Path(mw.notebooks[idx]["path"])
+            img_dir = nb_path / "assets" / "images"
+            img_dir.mkdir(parents=True, exist_ok=True)
+
+            img_name = f"{uuid4().hex}.png"
+            img_path = img_dir / img_name
+            pix.save(str(img_path), "PNG")
+
             doc.deleteLater()
-            return self._insert_pixmap(pix, view, at_scene_pos, file_path=path)
 
-
-
+            return self._insert_pixmap(
+                pix,
+                view,
+                at_scene_pos,
+                file_path=str(img_path),   # PNG (Preview)
+                original_path=path         # 🔥 PDF
+            )
         # ------------------------------
         # 3) Andere Dateien → Platzhalter
         # ------------------------------
@@ -324,11 +382,22 @@ class ViewGraphicsScene(QGraphicsScene):
         pix = self._cap_pixmap(placeholder, max_dim=800)
         return self._insert_pixmap(pix, view, at_scene_pos, file_path=path)
 
+    def _insert_pixmap(
+            self,
+            pix: QPixmap,
+            view=None,
+            at_scene_pos=None,
+            file_path=None,
+            original_path=None        # 👈 NEU
+        ):
+        item = GraphicsFileItem(
+            pix,
+            file_path=file_path,
+            original_path=original_path,
+            asset_id=Path(file_path).stem if file_path else None
+        )
 
-    def _insert_pixmap(self, pix: QPixmap, view=None, at_scene_pos: 'QPointF | None' = None, file_path: str | None = None):
-        """Erstellt ein GraphicsFileItem, fügt es zur Scene hinzu und positioniert es."""
-        item = GraphicsFileItem(pix, file_path)
-        item.setZValue(10)
+        item.setZValue(-100)
         self.addItem(item)
 
         # default position: explizit gesetzt oder in die Mitte der View
@@ -343,7 +412,6 @@ class ViewGraphicsScene(QGraphicsScene):
                 item.setPos(center.x() - pix.width() / 2, center.y() - pix.height() / 2)
             else:
                 item.setPos(0, 0)
-
         return item
 
 
@@ -373,19 +441,48 @@ class ViewGraphicsScene(QGraphicsScene):
     def set_drawing_mode(self, enabled: bool):
         self.drawing_enabled = enabled
     # ----------------- Mouse Events -----------------
+
+
     def mousePressEvent(self, event):
         if self.drawing_enabled and event.button() == Qt.LeftButton:
             self._pre_pixmap = self.canvas_pixmap.copy()
             self.last_pos = event.scenePos()
             return
         super().mousePressEvent(event)
+
+
     def mouseMoveEvent(self, event):
         if self.drawing_enabled and self.last_pos is not None:
-            self._draw_line(self.last_pos, event.scenePos())
-            self.last_pos = event.scenePos()
+            pos = event.scenePos()
+            self._move_counter += 1   # 🔥 HIER FEHLTE ES
+
+            is_pen = self._is_pen_input()
+
+            if is_pen:
+                # 🔥 FIX 6: nur jedes 2. Event zeichnen
+                if self._move_counter % 15 != 0:
+                    return
+
+                # 🔥 FIX 4: nur zeichnen wenn Bewegung relevant
+                if (pos - self.last_pos).manhattanLength() < 15:
+                    return
+                
+            else: 
+                if (pos - self.last_pos).manhattanLength() < 1.5:
+                    return
+
+            self._draw_line(self.last_pos, pos)
+            self.last_pos = pos
             return
+
         super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event):
+        if self.drawing_enabled and event.button() == Qt.LeftButton:
+            self.last_pos = None
+            self._move_counter = 0   # 🔥 WICHTIG
+
+
         if self.drawing_enabled and event.button() == Qt.LeftButton:
             self.last_pos = None
             post = self.canvas_pixmap.copy()
@@ -393,6 +490,7 @@ class ViewGraphicsScene(QGraphicsScene):
                 self.undo_stack.push(PixmapCommand(self.canvas_item, self._pre_pixmap, post))
             self._pre_pixmap = None
             return
+
         super().mouseReleaseEvent(event)
     # ----------------- Tablet Events -----------------
     def tabletEvent(self, event):
@@ -409,8 +507,8 @@ class ViewGraphicsScene(QGraphicsScene):
         else:
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             pen = QPen(self.pen_color, self.pen_width)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
+        pen.setCapStyle(Qt.FlatCap)
+        pen.setJoinStyle(Qt.MiterJoin)
         painter.setPen(pen)
         painter.drawLine(p1, p2)
         painter.end()
@@ -418,8 +516,9 @@ class ViewGraphicsScene(QGraphicsScene):
         rect = QRectF(p1, p2).normalized()
         pad = max(4, int(self.pen_width * 1.5))
         rect = rect.adjusted(-pad, -pad, pad, pad)
-        self.canvas_item.setPixmap(self.canvas_pixmap)
         self.canvas_item.update(rect.toRect())
+        self.canvas_item.setPixmap(self.canvas_pixmap)   #Ist noch nicht top
+        #self.canvas_item.update(rect.toRect())
     # ----------------- Setters -----------------
     def set_pen_color(self, color):
         self.pen_color = color
@@ -440,9 +539,23 @@ class ViewGraphicsScene(QGraphicsScene):
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
             for item in self.selectedItems():
                 if not isinstance(item, CanvasTextItem):
+                    if hasattr(item, "file_path") and item.file_path:
+                        try:
+                            os.remove(item.file_path)
+                        except Exception:
+                            pass
                     self.removeItem(item)
         else:
             super().keyPressEvent(event)
+
+
+    def _is_pen_input(self):
+        views = self.views()
+        if not views:
+            return False
+        view = views[0]
+        return getattr(view, "_pen_active", False)
+
 
 
 
