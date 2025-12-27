@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QGraphicsView
-from PySide6.QtCore import Qt, QPointF, QEvent
+from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QPainter, QTabletEvent, QMouseEvent
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -52,9 +52,7 @@ class ViewGraphicsView(QGraphicsView):
         self._pen_active = False
 
 
-    # --------------------------------------------------------------
     # TABLET-EVENTS (SURFACE STIFT)
-    # --------------------------------------------------------------
     def tabletEvent(self, event: QTabletEvent):
         """
         Convert tablet events (press/move/release) into synthetic QMouseEvent and
@@ -64,11 +62,10 @@ class ViewGraphicsView(QGraphicsView):
         """
 
         self._pen_active = True
-        #event.accept()
 
-        # pick best-available local / window / screen positions (Qt version differences)
+        # pick best-available local / window / screen positions
         try:
-            local_pos = event.position()        # Qt6.5+ returns QPointF
+            local_pos = event.position()
         except Exception:
             try:
                 local_pos = event.posF()
@@ -109,9 +106,6 @@ class ViewGraphicsView(QGraphicsView):
             # other tablet events (e.g. proximity) -> ignore
             event.ignore()
             return
-
-        # Create synthetic QMouseEvent. Different PySide builds expect slightly different constructors,
-        # so try the 7-arg form first, then fall back.
         try:
             fake = QMouseEvent(
                 mtype,
@@ -151,9 +145,7 @@ class ViewGraphicsView(QGraphicsView):
             return True
         return super().event(event)
 
-    # --------------------------------------------------------------
     # PANNING
-    # --------------------------------------------------------------
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             self._panning = True
@@ -186,9 +178,7 @@ class ViewGraphicsView(QGraphicsView):
         else:
             super().mouseReleaseEvent(event)
 
-    # --------------------------------------------------------------
     # ZOOMING
-    # --------------------------------------------------------------
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
             zoomInFactor = 1.15

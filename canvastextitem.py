@@ -1,33 +1,46 @@
 from PySide6.QtWidgets import (
-    QGraphicsTextItem, QGraphicsItem, QStyleOptionGraphicsItem, QWidget,
+    QGraphicsTextItem, QGraphicsItem, QStyleOptionGraphicsItem,
     QMenu, QDialog, QVBoxLayout, QDateTimeEdit, QPushButton
 )
-from PySide6.QtGui import QPen, QColor, QBrush, QFont, QTextCursor, QUndoCommand, QPainterPath
-from PySide6.QtCore import QRectF, Qt, QPointF, QDateTime, QTimer
+from PySide6.QtGui import QPen, QColor, QBrush, QFont, QUndoCommand, QPainterPath
+from PySide6.QtCore import QRectF, Qt, QDateTime
 import datetime
 import notify
-import uuid
+
 
 
 
 class CanvasTextItem(QGraphicsTextItem):
-    def __init__(self, text="", parent=None, start_edit=True):
+    def __init__(self, text="", parent=None, start_edit=True,
+                 font_family: str = "Arial", font_size: int = 16, text_color = None):
         super().__init__(text, parent)
-        self.note_id = uuid.uuid4().hex
 
-
+        # Flags
         self.setFlags(
             QGraphicsItem.ItemIsSelectable |
             QGraphicsItem.ItemIsMovable |
+            QGraphicsItem.ItemIsFocusable |
             QGraphicsItem.ItemSendsGeometryChanges
         )
 
-        # Style
-        self._padding = 10
+        # Style defaults
+        self._padding = 25
         self._bg_color = QColor(30, 30, 30)
         self._border_color = QColor(120, 120, 120)
-        self.setFont(QFont("Arial", 16))
-        self.setDefaultTextColor(QColor("#eeeeee"))
+        self._focused_border_color = QColor("#ffd24d")
+        self._focused_border_width = 3
+
+        # Font / Color
+        self.font_family = font_family or "Arial"
+        self.font_size = int(font_size or 16)
+        f = QFont(self.font_family, self.font_size)
+        self.setFont(f)
+        if text_color is None:
+            text_color = QColor("#eeeeee")
+        elif isinstance(text_color, str):
+            text_color = QColor(text_color)
+        self.text_color = text_color.name()
+        self.setDefaultTextColor(QColor(self.text_color))
 
         # Für Undo/Redo
         self._old_text = text
@@ -45,59 +58,44 @@ class CanvasTextItem(QGraphicsTextItem):
         self._deadline_set_at: datetime.datetime | None = None
         self._deadline_pre_notified: bool = False
         self._deadline_notified: bool = False
-        self._deadline_task_name = None  # optional: name of scheduled system task
+        self._deadline_task_name = None
 
-    # ----------------- Hintergrund -----------------
     def boundingRect(self) -> QRectF:
         rect = super().boundingRect()
         return rect.adjusted(-self._padding, -self._padding, self._padding, self._padding)
 
-    # ----------------- Editieren per Doppelklick -----------------
+    
+
     def mouseDoubleClickEvent(self, event):
-        self._old_text = self.toPlainText()  # Text vor Änderung merken
         self.setTextInteractionFlags(Qt.TextEditorInteraction)
         self.setFocus(Qt.MouseFocusReason)
-        super().mouseDoubleClickEvent(event)
+        self.activate_edit_mode()
 
-    # ----------------- Fokusverlust: Edit-Ende -----------------
-    def focusOutEvent(self, event):
-        self.setTextInteractionFlags(Qt.NoTextInteraction)
-        self._new_text = self.toPlainText()
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
 
-        # Wenn leer → Löschbefehl
-        if self._new_text.strip() == "":
-            cmd = DeleteTextCommand(self.scene(), self)
-            self.scene().undo_stack.push(cmd)
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if self.textInteractionFlags() == Qt.TextEditorInteraction:
+            self.setFocus(Qt.MouseFocusReason)
+            super().mousePressEvent(event)
             return
 
-        # Text wirklich geändert?
-        if self._old_text != self._new_text:
-            cmd = TextEditCommand(self, self._old_text, self._new_text)
-            self.scene().undo_stack.push(cmd)
-            # mark scene dirty
-            try:
-                self.scene().mark_dirty()
-            except Exception:
-                pass
+        super().mousePressEvent(event)
 
-        super().focusOutEvent(event)
 
-    # ----------------- Verschieben Undo/Redo -----------------
     def itemChange(self, change, value):
-        # Beim Start der Bewegung → alte Position speichern
         if change == QGraphicsItem.ItemPositionChange:
             self._old_pos = self.pos()
             self._new_pos = value
-
-        # Bewegung abgeschlossen → MoveCommand pushen
         if change == QGraphicsItem.ItemPositionHasChanged:
             if self.scene() and self._old_pos != self._new_pos:
                 cmd = MoveCommand(self, self._old_pos, self._new_pos)
                 self.scene().undo_stack.push(cmd)
-
         return super().itemChange(change, value)
 
-    # ----------------- Editiermodus per Code aktivieren -----------------
     def activate_edit_mode(self):
         self._old_text = self.toPlainText()
         self.setTextInteractionFlags(Qt.TextEditorInteraction)
@@ -113,17 +111,14 @@ class CanvasTextItem(QGraphicsTextItem):
         path.addRoundedRect(rect, 6, 6)
         return path
 
-    # ----------------- Kontextmenü für Deadline -----------------
     def contextMenuEvent(self, event):
         menu = QMenu()
         set_deadline_action = menu.addAction("Deadline setzen...")
         clear_deadline_action = menu.addAction("Deadline löschen")
         action = menu.exec_(event.screenPos())
-
         if action == set_deadline_action:
             self._open_deadline_dialog()
         elif action == clear_deadline_action:
-            # remove scheduled system task if exists
             if self._deadline_task_name:
                 try:
                     notify.delete_scheduled_task(self._deadline_task_name)
@@ -140,26 +135,21 @@ class CanvasTextItem(QGraphicsTextItem):
         dt_edit.setCalendarPopup(True)
         dt_edit.setDateTime(QDateTime.currentDateTime())
         layout.addWidget(dt_edit)
-
         btn_ok = QPushButton("OK", dlg)
         btn_cancel = QPushButton("Abbrechen", dlg)
         btn_ok.clicked.connect(dlg.accept)
         btn_cancel.clicked.connect(dlg.reject)
         layout.addWidget(btn_ok)
         layout.addWidget(btn_cancel)
-
         if dlg.exec() == QDialog.Accepted:
             qdt = dt_edit.dateTime()
-            # Qt -> Python datetime
             py_dt = qdt.toPython() if hasattr(qdt, "toPython") else datetime.datetime(
                 qdt.date().year(), qdt.date().month(), qdt.date().day(),
                 qdt.time().hour(), qdt.time().minute(), qdt.time().second()
             )
             self.set_deadline(py_dt)
 
-    # ----------------- Deadline-Logik -----------------
     def set_deadline(self, dt: datetime.datetime):
-        """Set or change deadline (local naive datetime)."""
         self.deadline = dt
         self._deadline_set_at = datetime.datetime.now()
         self._deadline_pre_notified = False
@@ -170,13 +160,11 @@ class CanvasTextItem(QGraphicsTextItem):
         except Exception:
             pass
 
-
     def clear_deadline(self):
         self.deadline = None
         self._deadline_set_at = None
         self._deadline_pre_notified = False
         self._deadline_notified = False
-        # delete scheduled task if any
         if self._deadline_task_name:
             try:
                 notify.delete_scheduled_task(self._deadline_task_name)
@@ -190,13 +178,12 @@ class CanvasTextItem(QGraphicsTextItem):
             pass
 
     def _compute_pre_notify_delta(self) -> datetime.timedelta:
-        """Berechnet Vorwarnzeit P = clamp((deadline - set_at)/6, 5min, 1day)."""
         if not self.deadline or not self._deadline_set_at:
             return datetime.timedelta(minutes=5)
         total = self.deadline - self._deadline_set_at
         if total.total_seconds() <= 0:
             return datetime.timedelta(minutes=5)
-        pre = total / 6  # timedelta division -> timedelta
+        pre = total / 6
         min_t = datetime.timedelta(minutes=5)
         max_t = datetime.timedelta(days=1)
         if pre < min_t:
@@ -205,35 +192,60 @@ class CanvasTextItem(QGraphicsTextItem):
             return max_t
         return pre
 
-    # ----------------- Painting + Swiss date format -----------------
-    def paint(self, painter, option: QStyleOptionGraphicsItem, widget: QWidget | None):
-        # Background + border
+    def focusOutEvent(self, event):
+        scene = self.scene()
+        if scene and scene.views():
+            view = scene.views()[0]
+            if view.hasFocus():
+                event.ignore()
+                return
+
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
+
+        self.setTextInteractionFlags(Qt.NoTextInteraction)
+        super().focusOutEvent(event)
+
+
+    def exit_edit_mode(self):
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
+
+        self.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.clearFocus()
+
+
+    def paint(self, painter, option: QStyleOptionGraphicsItem, widget=None):
+        # Hintergrund + Rahmen
         painter.setBrush(QBrush(self._bg_color))
-        painter.setPen(QPen(self._border_color, 2))
+
+        if self.hasFocus() or self.isSelected():
+            pen = QPen(self._focused_border_color, self._focused_border_width)
+        else:
+            pen = QPen(self._border_color, 2)
+
+        painter.setPen(pen)
         painter.drawRoundedRect(self.boundingRect(), 6, 6)
 
-        # Draw the regular text / editor contents
+        # Text zeichnen
         super().paint(painter, option, widget)
 
-        # Overlay: Deadline (Swiss date format)
+        # 🔔 Deadline Overlay
         if self.deadline:
             now = datetime.datetime.now()
             remaining = self.deadline - now
             pre = self._compute_pre_notify_delta()
 
-            # choose color: red if overdue, yellow if within pre-window, default small highlight otherwise
             if remaining.total_seconds() <= 0:
-                pen_color = QColor("#ff5555")  # red = overdue
+                pen_color = QColor("#ff5555")
             elif remaining <= pre:
-                pen_color = QColor("#ffdd55")  # yellow = pre-warning
+                pen_color = QColor("#ffdd55")
             else:
-                pen_color = QColor("#bbbbbb")  # subtle gray for distant deadlines
+                pen_color = QColor("#bbbbbb")
 
-            # Label: swiss format dd.MM.YYYY HH:MM
-            try:
-                label_date = self.deadline.strftime("%d.%m.%Y %H:%M")
-            except Exception:
-                label_date = str(self.deadline)
+            label_date = self.deadline.strftime("%d.%m.%Y %H:%M")
 
             if remaining.total_seconds() > 0:
                 remaining_str = str(remaining).split(".")[0]
@@ -241,16 +253,38 @@ class CanvasTextItem(QGraphicsTextItem):
             else:
                 label = f"🔔 Deadline: {label_date} (abgelaufen)"
 
-            r = self.boundingRect()
             painter.save()
             painter.setPen(pen_color)
             font = painter.font()
             font.setPointSize(max(8, font.pointSize() - 2))
             painter.setFont(font)
-            x = r.right() - 4 - painter.fontMetrics().horizontalAdvance(label)
-            y = r.bottom() - 4
+
+            r = self.boundingRect()
+            x = r.right() - 6 - painter.fontMetrics().horizontalAdvance(label)
+            y = r.bottom() - 6
+
             painter.drawText(x, y, label)
             painter.restore()
+
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            scene = self.scene()
+            if not scene:
+                return
+
+            if self.toPlainText().strip() == "" or \
+            self.textInteractionFlags() == Qt.NoTextInteraction:
+
+                cmd = DeleteTextCommand(scene, self)
+                scene.undo_stack.push(cmd)
+                event.accept()
+                return
+
+        super().keyPressEvent(event)
+
+
+
 # ============================================================
 # Undo/Redo Commands
 # ============================================================

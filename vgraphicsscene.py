@@ -1,16 +1,14 @@
 
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsPixmapItem, QApplication
+from PySide6.QtWidgets import QGraphicsScene, QGraphicsPixmapItem, QApplication
 from PySide6.QtGui import (
-    QWheelEvent, QBrush, QPixmap, QPainter, QPainterPath, QPen, QTransform,
-    QColor, QTextCursor, QUndoCommand, QTabletEvent, QImage
+    QPixmap, QPainter, QPainterPath, QPen, QTransform,
+    QColor, QUndoCommand, QImage
 )
-from PySide6.QtPdf import QPdfDocument
-from PySide6.QtCore import Qt, QRectF, QSize, QTimer, QEvent, QUrl, QPointF
+from PySide6.QtCore import Qt, QRectF, QPointF
 from canvastextitem import CanvasTextItem
-from drawCommand import DrawCommand
 import os
 
-import uuid, os, shutil, json
+import uuid, os
 from pathlib import Path
 from PySide6.QtGui import QImage, QPainter
 from uuid import uuid4
@@ -33,7 +31,7 @@ class GraphicsFileItem(QGraphicsPixmapItem):
         pixmap,
         file_path: str | None = None,
         asset_id: str | None = None,
-        original_path: str | None = None   # 👈 NEU
+        original_path: str | None = None 
     ):
         super().__init__(pixmap)
         from PySide6.QtWidgets import QGraphicsItem
@@ -41,8 +39,8 @@ class GraphicsFileItem(QGraphicsPixmapItem):
             QGraphicsItem.ItemIsSelectable |
             QGraphicsItem.ItemIsMovable
         )
-        self.file_path = file_path          # PNG / Bild
-        self.original_path = original_path  # PDF (NEU)
+        self.file_path = file_path
+        self.original_path = original_path
         self.asset_id = asset_id or uuid.uuid4().hex
 
     # ----------------- Clipboard / Paste support -----------------
@@ -98,10 +96,6 @@ class ViewGraphicsScene(QGraphicsScene):
         self._pre_pixmap = None
         self.canvas_pixmap = QPixmap(width, height)
         self.canvas_pixmap.fill(Qt.transparent)
-        """"
-        self.canvas_item = SafePixmapItem(self.canvas_pixmap)
-        self.addItem(self.canvas_item)
-        self.canvas_item.setZValue(1)"""
         self.canvas_item = self.addPixmap(self.canvas_pixmap)
         self.canvas_item.setZValue(1)
         # Grid
@@ -155,9 +149,8 @@ class ViewGraphicsScene(QGraphicsScene):
                 painter.drawPixmap(x, y, tile)
                 y += ts.height()
             x += ts.width()
-    # ----------------- Text Item -----------------
 
-        # ----------------- Clipboard / File paste helpers -----------------
+     # ----------------- Clipboard / File paste helpers -----------------
     def _cap_pixmap(self, pix: QPixmap, max_dim=1200) -> QPixmap:
         """Skaliere große Bilder runter (vermeidet Speicher-/Rendering-Probleme)."""
         w = pix.width()
@@ -195,7 +188,6 @@ class ViewGraphicsScene(QGraphicsScene):
 
             pix = self._cap_pixmap(pix)
 
-            # 🔽 NEU: Bild als Datei speichern
             from uuid import uuid4
             from pathlib import Path
 
@@ -216,7 +208,6 @@ class ViewGraphicsScene(QGraphicsScene):
                 print("ERROR: pixmap could not be saved!")
                 return None
 
-            # 🔽 WICHTIG: file_path setzen!
             return self._insert_pixmap(
                 QPixmap(str(img_path)),
                 view,
@@ -231,7 +222,6 @@ class ViewGraphicsScene(QGraphicsScene):
                     path = url.toLocalFile()
                     return self.paste_file(path, view, at_scene_pos)
 
-        # 3) nichts gefunden
         return None
 
     def paste_file(self, path: str, view=None, at_scene_pos: 'QPointF | None' = None):
@@ -244,9 +234,7 @@ class ViewGraphicsScene(QGraphicsScene):
 
         lower = path.lower()
 
-        # ------------------------------
         # 1) Bilder direkt einfügen
-        # ------------------------------
         if lower.endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff")):
             pix = QPixmap(path)
             if pix.isNull():
@@ -254,19 +242,13 @@ class ViewGraphicsScene(QGraphicsScene):
             pix = self._cap_pixmap(pix)
             return self._insert_pixmap(pix, view, at_scene_pos, file_path=path)
 
-        # ------------------------------
         # 2) PDFs rendern (erste Seite)
-        # ------------------------------
-        # PDF als Bild einfügen
-        # PDF laden und rendern (neue PySide6 API)
-       # --- PDF: rendern (robust für verschiedene PySide6-Versionen) ---
         if lower.endswith(".pdf"):
             try:
                 from PySide6.QtPdf import QPdfDocument, QPdfDocumentRenderOptions
                 from PySide6.QtCore import QSize
                 from PySide6.QtGui import QImage
             except Exception:
-                # QtPdf nicht verfügbar
                 print("QtPdf nicht verfügbar")
                 return None
 
@@ -280,13 +262,11 @@ class ViewGraphicsScene(QGraphicsScene):
                 return None
 
             page = 0
-            # bestimme physikalische Page-Grösse (Punktgröße), falls verfügbar
             try:
                 page_size = doc.pagePointSize(page)  # QSizeF oder QSize-like
                 pw = int(page_size.width())
                 ph = int(page_size.height())
             except Exception:
-                # fallback auf Standard-Thumbnail-Grösse
                 pw, ph = 800, 1100
 
             # skaliere etwas höher auflösung zum Schärfen
@@ -296,12 +276,10 @@ class ViewGraphicsScene(QGraphicsScene):
 
             opts = QPdfDocumentRenderOptions()
 
-            # 1) Versuch: neue Signatur -> render(page, QSize, options) -> QImage zurück
             image = None
             try:
                 image = doc.render(page, QSize(target_w, target_h), opts)
                 if isinstance(image, QImage):
-                    # 🔥 HIER der entscheidende Fix
                     fixed = QImage(image.size(), QImage.Format_ARGB32)
                     fixed.fill(Qt.white)
                     painter = QPainter(fixed)
@@ -309,12 +287,12 @@ class ViewGraphicsScene(QGraphicsScene):
                     painter.end()
                     image = fixed
                 print("PDF image format:", image.format())
-                # doc.render liefert in neueren Builds ein QImage
+            
                 if not isinstance(image, QImage):
-                    # falls etwas anderes zurückkam, setzen wir image auf None damit wir fallback probieren
+                
                     image = None
             except TypeError:
-                # Signatur passt nicht -> fallback unten
+            
                 image = None
             except Exception as e:
                 print("PDF render (QSize) Fehlgeschlagen:", e)
@@ -325,7 +303,7 @@ class ViewGraphicsScene(QGraphicsScene):
                 try:
                     img = QImage(target_w, target_h, QImage.Format_ARGB32)
                     img.fill(Qt.white)
-                    ok = doc.render(page, img, opts)  # ältere API erwartet QImage
+                    ok = doc.render(page, img, opts)
                     if ok:
                         image = img
                     else:
@@ -343,7 +321,7 @@ class ViewGraphicsScene(QGraphicsScene):
             pix = QPixmap.fromImage(image)
             pix = GraphicsFileItem._cap_pixmap(pix, max_dim=1600)
 
-            # 🔽 PDF-Vorschau als PNG speichern (WICHTIG!)
+
             mw = self.main_window
             idx = mw.list_notebooks.currentRow()
             nb_path = Path(mw.notebooks[idx]["path"])
@@ -360,12 +338,10 @@ class ViewGraphicsScene(QGraphicsScene):
                 pix,
                 view,
                 at_scene_pos,
-                file_path=str(img_path),   # PNG (Preview)
-                original_path=path         # 🔥 PDF
+                file_path=str(img_path),
+                original_path=path
             )
-        # ------------------------------
         # 3) Andere Dateien → Platzhalter
-        # ------------------------------
         txt = os.path.basename(path)
         w, h = 300, 100
         placeholder = QPixmap(w, h)
@@ -388,7 +364,7 @@ class ViewGraphicsScene(QGraphicsScene):
             view=None,
             at_scene_pos=None,
             file_path=None,
-            original_path=None        # 👈 NEU
+            original_path=None
         ):
         item = GraphicsFileItem(
             pix,
@@ -400,7 +376,6 @@ class ViewGraphicsScene(QGraphicsScene):
         item.setZValue(-100)
         self.addItem(item)
 
-        # default position: explizit gesetzt oder in die Mitte der View
         if at_scene_pos is not None:
             item.setPos(at_scene_pos)
         else:
@@ -419,24 +394,23 @@ class ViewGraphicsScene(QGraphicsScene):
         item = CanvasTextItem("", start_edit=True)
         item.setPos(pos)
         self.addItem(item)
-        item.setFocus(Qt.FocusReason.ActiveWindowFocusReason)  # <-- Fokus sofort setzen
+        item.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         return item
     
     def mouseDoubleClickEvent(self, event):
-        print("Scene Double Click at", event.scenePos())
         clicked_item = self.itemAt(event.scenePos(), QTransform())
-        print("Clicked item:", clicked_item)
         if clicked_item is None:
-            print("Adding new text item")
-            item = CanvasTextItem("", start_edit=True)
+            mw = getattr(self, "main_window", None)
+            fam = getattr(mw, "default_font_family", "Arial")
+            fsize = getattr(mw, "default_font_size", 16)
+            color = getattr(mw, "default_text_color", None)
+            item = CanvasTextItem("", start_edit=True, font_family=fam, font_size=fsize, text_color=color)
             item.setPos(event.scenePos())
             self.addItem(item)
         elif isinstance(clicked_item, CanvasTextItem):
-            print("Activating edit mode for clicked text item")
             clicked_item.activate_edit_mode()
-            clicked_item.setFocus(Qt.FocusReason.ActiveWindowFocusReason)  # <-- Fokus setzen
+            clicked_item.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         super().mouseDoubleClickEvent(event)
-        print("fertig")
     # ----------------- Drawing Mode -----------------
     def set_drawing_mode(self, enabled: bool):
         self.drawing_enabled = enabled
@@ -444,26 +418,35 @@ class ViewGraphicsScene(QGraphicsScene):
 
 
     def mousePressEvent(self, event):
-        if self.drawing_enabled and event.button() == Qt.LeftButton:
-            self._pre_pixmap = self.canvas_pixmap.copy()
-            self.last_pos = event.scenePos()
-            return
+        clicked_items = self.items(event.scenePos())
+
+        clicked_text = any(
+            isinstance(it, CanvasTextItem) for it in clicked_items
+        )
+
+        if not clicked_text:
+            for it in self.items():
+                if isinstance(it, CanvasTextItem):
+                    it.setTextInteractionFlags(Qt.NoTextInteraction)
+                    it.clearFocus()
+
         super().mousePressEvent(event)
+
 
 
     def mouseMoveEvent(self, event):
         if self.drawing_enabled and self.last_pos is not None:
             pos = event.scenePos()
-            self._move_counter += 1   # 🔥 HIER FEHLTE ES
+            self._move_counter += 1
 
             is_pen = self._is_pen_input()
 
             if is_pen:
-                # 🔥 FIX 6: nur jedes 2. Event zeichnen
+            
                 if self._move_counter % 15 != 0:
                     return
 
-                # 🔥 FIX 4: nur zeichnen wenn Bewegung relevant
+            
                 if (pos - self.last_pos).manhattanLength() < 15:
                     return
                 
@@ -480,7 +463,7 @@ class ViewGraphicsScene(QGraphicsScene):
     def mouseReleaseEvent(self, event):
         if self.drawing_enabled and event.button() == Qt.LeftButton:
             self.last_pos = None
-            self._move_counter = 0   # 🔥 WICHTIG
+            self._move_counter = 0
 
 
         if self.drawing_enabled and event.button() == Qt.LeftButton:
@@ -494,9 +477,6 @@ class ViewGraphicsScene(QGraphicsScene):
         super().mouseReleaseEvent(event)
     # ----------------- Tablet Events -----------------
     def tabletEvent(self, event):
-        # Niemals Tablet-Events hier behandeln!
-        # Sie wurden im View bereits in MouseEvents umgewandelt.
-        # Scene darf sie weder ignorieren noch akzeptieren.
         return
     # ----------------- Draw Routine -----------------
     def _draw_line(self, p1, p2):
@@ -512,13 +492,11 @@ class ViewGraphicsScene(QGraphicsScene):
         painter.setPen(pen)
         painter.drawLine(p1, p2)
         painter.end()
-        # Update changed region
         rect = QRectF(p1, p2).normalized()
         pad = max(4, int(self.pen_width * 1.5))
         rect = rect.adjusted(-pad, -pad, pad, pad)
         self.canvas_item.update(rect.toRect())
-        self.canvas_item.setPixmap(self.canvas_pixmap)   #Ist noch nicht top
-        #self.canvas_item.update(rect.toRect())
+        self.canvas_item.setPixmap(self.canvas_pixmap)
     # ----------------- Setters -----------------
     def set_pen_color(self, color):
         self.pen_color = color
@@ -555,7 +533,18 @@ class ViewGraphicsScene(QGraphicsScene):
             return False
         view = views[0]
         return getattr(view, "_pen_active", False)
-
+    
+    def addTextItem(self, pos):
+        # Verwende Default-Font-Einstellungen vom MainWindow (falls vorhanden)
+        mw = getattr(self, "main_window", None)
+        fam = getattr(mw, "default_font_family", "Arial")
+        fsize = getattr(mw, "default_font_size", 16)
+        color = getattr(mw, "default_text_color", None)
+        item = CanvasTextItem("", start_edit=True, font_family=fam, font_size=fsize, text_color=color)
+        item.setPos(pos)
+        self.addItem(item)
+        item.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        return item
 
 
 

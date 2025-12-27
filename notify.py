@@ -1,6 +1,5 @@
 import sys
 import subprocess
-import shlex
 import os
 from pathlib import Path
 
@@ -22,9 +21,7 @@ except Exception:
         pass
 
 
-# ------------------------------
 # Optional: schedule a Windows task
-# ------------------------------
 def schedule_windows_notification(task_name: str, run_at_dt, title: str, message: str, python_exe: str = None, notify_script: str = None):
     """
     Create an ONCE schtask that runs a Python script/exe at run_at_dt to show a notification.

@@ -7,8 +7,8 @@ from pathlib import Path
 from PySide6.QtGui import QImage, QPixmap, QColor
 from PySide6.QtCore import QPointF
 from canvastextitem import CanvasTextItem
-from vgraphicsscene import GraphicsFileItem  # falls vorhanden (class name from your file)
-# Note: GraphicsFileItem in vgraphicsscene is named GraphicsFileItem
+from vgraphicsscene import GraphicsFileItem
+import datetime
 
 def _ensure_assets_folder(nb_path: Path) -> Path:
     assets = nb_path / "assets" / "images"
@@ -47,30 +47,24 @@ def serialize_scene(scene, nb_path: str) -> str:
     for item in scene.items():
         # Canvas pixmap item (skip since saved separately)
         # Text items (CanvasTextItem)
+
         if isinstance(item, CanvasTextItem):
             entry = {
                 "type": "text",
-                "text": item.toPlainText(),
+                "html": item.toHtml(),
                 "x": item.x(),
                 "y": item.y(),
                 "z": item.zValue(),
+                "deadline": item.deadline.isoformat() if item.deadline else None,
+                "deadline_set_at": (
+                    item._deadline_set_at.isoformat()
+                    if getattr(item, "_deadline_set_at", None)
+                    else None
+                ),
             }
-            # font size + color if available
-            try:
-                entry["font_size"] = item.font().pointSize()
-                color = item.defaultTextColor()
-                if isinstance(color, QColor):
-                    entry["color"] = color.name()
-            except Exception:
-                pass
-
-            # deadline (if exists)
-            if hasattr(item, "file_path"):
-                fp = getattr(item, "file_path")
-                rel = _copy_asset(fp, assets)
             items.append(entry)
-            continue
 
+    
         # File items (GraphicsFileItem)
         try:
             # `GraphicsFileItem` stores .file_path attribute in your vgraphicsscene
@@ -130,8 +124,6 @@ def deserialize_scene(scene, json_str: str, nb_path: str, main_window=None):
             continue
         scene.removeItem(item)
 
-    #scene.undotack.setEnabled(True)
-
     # Load canvas pixmap (drawings)
     canvas_file = data.get("canvas")
     if canvas_file:
@@ -152,26 +144,28 @@ def deserialize_scene(scene, json_str: str, nb_path: str, main_window=None):
     for it in data.get("items", []):
         t = it.get("type")
         if t == "text":
-            ti = CanvasTextItem(it.get("text", ""), start_edit=False)
+            ti = CanvasTextItem("", start_edit=False)
             ti.setPos(float(it.get("x", 0)), float(it.get("y", 0)))
-            try:
-                fs = int(it.get("font_size"))
-                f = ti.font()
-                f.setPointSize(fs)
-                ti.setFont(f)
-            except Exception:
-                pass
-            try:
-                color = it.get("color")
-                if color:
-                    ti.setDefaultTextColor(QColor(color))
-            except Exception:
-                pass
+
+            if "html" in it:
+                ti.setHtml(it["html"])
+            else:
+                ti.setPlainText(it.get("text", ""))
+
+
+            
             # deadline: you must parse/assign for your CanvasTextItem if attribute exists
-            if "deadline_iso" in it and hasattr(ti, "deadline"):
+            deadline = it.get("deadline")
+            if deadline:
                 try:
-                    import datetime
-                    ti.deadline = datetime.datetime.fromisoformat(it["deadline_iso"])
+                    ti.deadline = datetime.datetime.fromisoformat(deadline)
+                except Exception:
+                    pass
+
+            deadline_set_at = it.get("deadline_set_at")
+            if deadline_set_at:
+                try:
+                    ti._deadline_set_at = datetime.datetime.fromisoformat(deadline_set_at)
                 except Exception:
                     pass
             scene.addItem(ti)
@@ -190,21 +184,18 @@ def deserialize_scene(scene, json_str: str, nb_path: str, main_window=None):
                     try:
                         gfi = GraphicsFileItem(
                             pix,
-                            file_path=str(src),                      # PNG Preview
-                            original_path=it.get("original_path"),   # 🔥 PDF Pfad
+                            file_path=str(src),
+                            original_path=it.get("original_path"), 
                             asset_id=src.stem
                         )
                         gfi.setPos(float(it.get("x", 0)), float(it.get("y", 0)))
-                        #gfi.setZValue(float(it.get("z", 10)))
-                        gfi.setZValue(-100)  # <-- ganz nach hinten
+                        gfi.setZValue(-100) 
                         scene.addItem(gfi)
                     except Exception:
-                        # Fallback: einfach Pixmap hinzufügen
                         item = scene.addPixmap(pix)
                         item.setPos(float(it.get("x", 0)), float(it.get("y", 0)))
-                        item.setZValue(-100)  # <-- ganz nach hinten
+                        item.setZValue(-100) 
             continue
 
-        # Unknown — skip
         continue
 

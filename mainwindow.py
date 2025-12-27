@@ -1,9 +1,9 @@
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QPen, QBrush, QFont, QAction, QIcon, QUndoStack
+from PySide6.QtGui import QBrush, QFont, QAction, QUndoStack, QColor, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QGraphicsItem, QGraphicsView, QGraphicsScene,
+    QMainWindow, QGraphicsView,
     QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QInputDialog,
-    QToolBar, QMenu, QMessageBox, QColorDialog
+    QToolBar, QMenu, QMessageBox, QColorDialog, QComboBox, QSpinBox
 )
 from vgraphicsscene import ViewGraphicsScene
 from vgraphicsview import ViewGraphicsView
@@ -13,16 +13,14 @@ import os
 import json
 import shutil
 import uuid
-import sys
 from pathlib import Path
 from PySide6.QtCore import QStandardPaths, QPointF
-from PySide6.QtGui import QImage, QPainter, QPixmap
 from canvastextitem import CanvasTextItem
-# mainwindow.py (oben)
 from pathlib import Path
 import uuid
 from database_manager import DatabaseManager
 from serializer import serialize_scene, deserialize_scene
+from PySide6.QtGui import QTextListFormat, QTextCursor
 
 
 
@@ -46,9 +44,7 @@ class MainWindow(QMainWindow):
         self.db = DatabaseManager(db_path)
 
 
-        # ---------------------------------
         # TOOLBAR OBEN
-        # ---------------------------------
         toolbar = QToolBar("Werkzeuge")
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(32, 32))
@@ -77,7 +73,7 @@ class MainWindow(QMainWindow):
         self.action_eraser.triggered.connect(self.toggle_eraser)
         toolbar.addAction(self.action_eraser)
 
-        self.pen_width = 3              # deine normale Stiftdicke
+        self.pen_width = 3
         self._base_pen_width = self.pen_width
 
 
@@ -92,9 +88,7 @@ class MainWindow(QMainWindow):
         act_redo.triggered.connect(self.undo_stack.redo)
         toolbar.addAction(act_redo)
 
-        # ---------------------------------
         # SIDEBAR + CANVAS LAYOUT
-        # ---------------------------------
         central = QWidget()
         layout = QHBoxLayout(central)
         self.setCentralWidget(central)
@@ -149,8 +143,59 @@ class MainWindow(QMainWindow):
         self._load_notebooks_from_db()
         self.reset_view_to_top_left()
 
-        # Erstes Notebook erzeugen
-        #self.add_notebook(initial=True)
+        # --- Default Text Style (wird auf neue TextItems angewendet) ---
+        self.default_font_family = "Arial"
+        self.default_font_size = 16
+        self.default_text_color = QColor("#eeeeee")
+
+        # -------------- Text style controls --------------
+        # Font family (editable, short list + user can type to search)
+        self.font_combo = QComboBox()
+        self.font_combo.setEditable(True)
+        fonts = ["Arial", "Helvetica", "Times New Roman", "Courier New", "Verdana", "Calibri"]
+        self.font_combo.addItems(fonts)
+        self.font_combo.setCurrentText(self.default_font_family)
+        self.font_combo.setFixedWidth(180)
+        self.font_combo.currentTextChanged.connect(self._on_font_family_changed)
+        toolbar.addWidget(self.font_combo)
+
+        # Font size (6 - 72)
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(6, 72)
+        self.font_size_spin.setValue(self.default_font_size)
+        self.font_size_spin.setFixedWidth(70)
+        self.font_size_spin.valueChanged.connect(self._on_font_size_changed)
+        toolbar.addWidget(self.font_size_spin)
+
+        # Text color picker (only for text)
+        self.action_text_color = QAction("🅰️", self)
+        self.action_text_color.setToolTip("Textfarbe wählen")
+        self.action_text_color.triggered.connect(self._choose_text_color)
+        toolbar.addAction(self.action_text_color)
+        # -------------------------------------------------
+
+        
+        # Fett
+        self.action_bold = QAction("B", self)
+        self.action_bold.setCheckable(True)
+        self.action_bold.triggered.connect(self._toggle_bold)
+        toolbar.addAction(self.action_bold)
+
+        # Kursiv
+        self.action_italic = QAction("I", self)
+        self.action_italic.setCheckable(True)
+        self.action_italic.triggered.connect(self._toggle_italic)
+        toolbar.addAction(self.action_italic)
+
+        # Aufzählung
+        self.action_bullet = QAction("•", self)
+        self.action_bullet.triggered.connect(self._toggle_bullet_list)
+        toolbar.addAction(self.action_bullet)
+
+        # Nummerierung
+        self.action_numbered = QAction("1.", self)
+        self.action_numbered.triggered.connect(self._toggle_numbered_list)
+        toolbar.addAction(self.action_numbered)
 
     
     def _load_notebooks_from_db(self):
@@ -179,6 +224,7 @@ class MainWindow(QMainWindow):
             Path(path).mkdir(parents=True, exist_ok=True)
 
             scene = ViewGraphicsScene(self, width=5000, height=5000)
+            scene.selectionChanged.connect(self._update_text_controls_from_selection)
             scene.setBackgroundBrush(QBrush(Qt.darkGray))
             # create title item like in add_notebook
             from PySide6.QtGui import QFont
@@ -211,9 +257,7 @@ class MainWindow(QMainWindow):
             self.list_notebooks.setCurrentRow(0)
 
 
-    # ============================================================
     # NEUES NOTIZBUCH
-    # ============================================================
     def add_notebook(self, initial=False):
         if initial:
             title = "Neues Notizbuch"
@@ -223,6 +267,7 @@ class MainWindow(QMainWindow):
                 return
 
         scene = ViewGraphicsScene(self, width=5000, height=5000)
+        scene.selectionChanged.connect(self._update_text_controls_from_selection)
         scene.setBackgroundBrush(QBrush(Qt.darkGray))
 
 
@@ -282,7 +327,6 @@ class MainWindow(QMainWindow):
         nb_path = Path(nb["path"])
         try:
             scene_json = serialize_scene(scene, nb_path)
-            # mark not dirty after successful write
             self.db.update_notebook(nb["id"], title=nb["title"], scene_json=scene_json)
             nb["dirty"] = False
         except Exception as e:
@@ -291,7 +335,6 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def _import_existing_folders_to_db(self):
-        # scan notebooks_dir for subfolders that are not in DB yet
         existing_db_paths = {r["path"] for r in self.db.list_notebooks()}
         for child in self.notebooks_dir.iterdir():
             if child.is_dir() and str(child) not in existing_db_paths:
@@ -310,20 +353,22 @@ class MainWindow(QMainWindow):
                 # write db entry
                 self.db.create_notebook(nb_uuid, title, str(child), scene_json)
 
-    # ============================================================
     # NOTIZBUCH WECHSELN
-    # ============================================================
     def switch_notebook(self, index):
         if index < 0 or index >= len(self.notebooks):
             return
         self.current_scene = self.notebooks[index]["scene"]
+        try:
+            # disconnect old (best effort)
+            self.current_scene.selectionChanged.disconnect(self._update_text_controls_from_selection)
+        except Exception:
+            pass
+        self.current_scene.selectionChanged.connect(self._update_text_controls_from_selection)
         self.view.setScene(self.current_scene)
         self.current_scene.set_drawing_mode(self.action_draw.isChecked())
         self.reset_view_to_top_left()
 
-    # ============================================================
     # CONTEXT MENU: UMBENENNEN / LÖSCHEN
-    # ============================================================
     def open_notebook_context_menu(self, position):
         item = self.list_notebooks.itemAt(position)
         if not item:
@@ -419,9 +464,7 @@ class MainWindow(QMainWindow):
             self.current_scene = None
 
 
-    # ============================================================
     # WERKZEUGE
-    # ============================================================
     def toggle_draw_mode(self, enabled):
         if self.current_scene:
             self.current_scene.set_drawing_mode(enabled)
@@ -546,6 +589,185 @@ class MainWindow(QMainWindow):
 
         self.view.horizontalScrollBar().setValue(0)
         self.view.verticalScrollBar().setValue(0)
+
+
+    # ---------------- Text style handlers ----------------
+    def _on_font_family_changed(self, family: str):
+        family = family.strip()
+        if not family:
+            return
+        self.default_font_family = family
+        # Wenn ein TextItem ausgewählt, anwenden
+        if self.current_scene:
+            for it in self.current_scene.selectedItems():
+                try:
+                    from canvastextitem import CanvasTextItem
+                    if isinstance(it, CanvasTextItem):
+                        f = it.font()
+                        f.setFamily(family)
+                        it.setFont(f)
+                        it.font_family = family
+                        try:
+                            self.current_scene.mark_dirty()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+    def _on_font_size_changed(self, size: int):
+        self.default_font_size = int(size)
+
+        if not self.current_scene:
+            return
+
+        for it in self.current_scene.selectedItems():
+            if it.__class__.__name__ != "CanvasTextItem":
+                continue
+
+
+            cursor = it.textCursor()
+            if not cursor:
+                continue
+            
+            fmt = cursor.charFormat()
+            fmt.setFontPointSize(int(size))
+
+            if not cursor.hasSelection():
+                cursor.select(QTextCursor.WordUnderCursor)
+
+            cursor.mergeCharFormat(fmt)
+            cursor.clearSelection()
+
+
+            cursor.mergeCharFormat(fmt)
+            cursor.clearSelection()
+            it.setTextCursor(cursor)
+            it.setFocus(Qt.OtherFocusReason)
+
+            try:
+                self.current_scene.mark_dirty()
+            except Exception:
+                pass
+
+
+    def _choose_text_color(self):
+        color = QColorDialog.getColor(initial=self.default_text_color, parent=self)
+        if not color.isValid():
+            return
+
+        self.default_text_color = color
+
+        if not self.current_scene:
+            return
+
+        for it in self.current_scene.selectedItems():
+            if it.__class__.__name__ != "CanvasTextItem":
+                continue
+
+            cursor = it.textCursor()
+            if not cursor:
+                continue
+
+            fmt = cursor.charFormat()
+            fmt.setForeground(color)
+
+            if not cursor.hasSelection():
+                cursor.select(QTextCursor.WordUnderCursor)
+
+            cursor.mergeCharFormat(fmt)
+
+            it.setTextCursor(cursor)
+
+            try:
+                self.current_scene.mark_dirty()
+            except Exception:
+                pass
+
+    def _update_text_controls_from_selection(self):
+        """Wenn eine Selektion in der Scene passiert → Toolbar updaten."""
+        if not self.current_scene:
+            return
+        sel = [i for i in self.current_scene.selectedItems() if i.__class__.__name__ == "CanvasTextItem"]
+        if len(sel) == 1:
+            it = sel[0]
+            try:
+                f = it.font()
+                family = f.family()
+                size = max(6, f.pointSize() or self.default_font_size)
+                color = it.defaultTextColor()
+                self.font_combo.blockSignals(True)
+                self.font_size_spin.blockSignals(True)
+                self.font_combo.setCurrentText(family)
+                self.font_size_spin.setValue(size)
+                self.font_combo.blockSignals(False)
+                self.font_size_spin.blockSignals(False)
+                if hasattr(color, "name"):
+                    # set default_text_color preview to this color
+                    self.default_text_color = color
+            except Exception:
+                pass
+        else:
+            # mehrere oder keine — Rückfall auf Defaults (aber Signals nicht auslösen)
+            self.font_combo.blockSignals(True)
+            self.font_size_spin.blockSignals(True)
+            self.font_combo.setCurrentText(self.default_font_family)
+            self.font_size_spin.setValue(self.default_font_size)
+            self.font_combo.blockSignals(False)
+            self.font_size_spin.blockSignals(False)
+
+
+    def _toggle_bold(self):
+        if not self.current_scene:
+            return
+        for it in self.current_scene.selectedItems():
+            if not isinstance(it, CanvasTextItem):
+                continue
+            cursor = it.textCursor()
+            fmt = cursor.charFormat()
+            fmt.setFontWeight(QFont.Bold if not fmt.font().bold() else QFont.Normal)
+            cursor.mergeCharFormat(fmt)
+            it.setTextCursor(cursor)
+
+    def _toggle_italic(self):
+        if not self.current_scene:
+            return
+        for it in self.current_scene.selectedItems():
+            if not isinstance(it, CanvasTextItem):
+                continue
+            cursor = it.textCursor()
+            fmt = cursor.charFormat()
+            fmt.setFontItalic(not fmt.fontItalic())
+            cursor.mergeCharFormat(fmt)
+            it.setTextCursor(cursor)
+
+    def _toggle_bullet_list(self):
+        if not self.current_scene:
+            return
+        for it in self.current_scene.selectedItems():
+            if not isinstance(it, CanvasTextItem):
+                continue
+            cursor = it.textCursor()
+            cursor.beginEditBlock()
+            block_format = cursor.blockFormat()
+            list_format = QTextListFormat()
+            list_format.setStyle(QTextListFormat.ListDisc)
+            cursor.createList(list_format)
+            cursor.endEditBlock()
+            it.setTextCursor(cursor)
+
+    def _toggle_numbered_list(self):
+        if not self.current_scene:
+            return
+        for it in self.current_scene.selectedItems():
+            if not isinstance(it, CanvasTextItem):
+                continue
+            cursor = it.textCursor()
+            cursor.beginEditBlock()
+            list_format = QTextListFormat()
+            list_format.setStyle(QTextListFormat.ListDecimal)
+            cursor.createList(list_format)
+            cursor.endEditBlock()
+            it.setTextCursor(cursor)
 
 
 
