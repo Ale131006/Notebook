@@ -418,6 +418,14 @@ class ViewGraphicsScene(QGraphicsScene):
 
 
     def mousePressEvent(self, event):
+
+        for item in list(self.items()):
+            if isinstance(item, CanvasTextItem):
+                if item.toPlainText().strip() == "":
+                    # nur löschen, wenn es NICHT gerade fokussiert wird
+                    if item is not self.focusItem():
+                        self.removeItem(item)
+
         if self.drawing_enabled and event.button() == Qt.LeftButton:
             self.last_pos = event.scenePos()
             self._move_counter = 0

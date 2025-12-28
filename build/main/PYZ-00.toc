@@ -148,10 +148,6 @@
   ('decimal', 'C:\\Python312\\Lib\\decimal.py', 'PYMODULE'),
   ('difflib', 'C:\\Python312\\Lib\\difflib.py', 'PYMODULE'),
   ('dis', 'C:\\Python312\\Lib\\dis.py', 'PYMODULE'),
-  ('drawCommand',
-   'C:\\Users\\Alessandro Frei\\OneDrive - SBL\\Dokumente\\Gymnasium '
-   'Liestal\\Informatik\\Python\\Notebook\\drawCommand.py',
-   'PYMODULE'),
   ('email', 'C:\\Python312\\Lib\\email\\__init__.py', 'PYMODULE'),
   ('email._encoded_words',
    'C:\\Python312\\Lib\\email\\_encoded_words.py',

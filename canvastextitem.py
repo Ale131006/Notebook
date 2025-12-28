@@ -78,6 +78,16 @@ class CanvasTextItem(QGraphicsTextItem):
         event.accept()
 
     def mousePressEvent(self, event):
+
+        if self.textInteractionFlags() == Qt.NoTextInteraction and \
+            self.toPlainText().strip() == "":
+                scene = self.scene()
+                if scene:
+                    scene.removeItem(self)
+                    event.accept()
+                    return
+
+
         if self.textInteractionFlags() == Qt.TextEditorInteraction:
             self.setFocus(Qt.MouseFocusReason)
             super().mousePressEvent(event)
@@ -200,9 +210,15 @@ class CanvasTextItem(QGraphicsTextItem):
                 event.ignore()
                 return
             
-        new_text = self.toPlainText()
 
-        """if scene and new_text != self._old_text:
+        if scene and self._is_effectively_empty():
+            scene.removeItem(self)
+            event.accept()
+            return
+            
+        """new_text = self.toPlainText()
+
+        if scene and new_text != self._old_text:
             cmd = TextEditCommand(self, self._old_text, new_text) #UNDO (Auskommentiert wegen Fehler)
             scene.undo_stack.push(cmd)"""
 
@@ -271,6 +287,9 @@ class CanvasTextItem(QGraphicsTextItem):
 
             painter.drawText(x, y, label)
             painter.restore()
+
+    def _is_effectively_empty(self) -> bool:
+        return self.toPlainText().strip() == ""
 
 
     def keyPressEvent(self, event):
