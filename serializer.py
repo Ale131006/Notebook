@@ -117,7 +117,7 @@ def deserialize_scene(scene, json_str: str, nb_path: str, main_window=None):
         data = {}
 
     #scene.undo_stack.setEnabled(False)
-    scene.undo_stack.clear()
+    #scene.undo_stack.clear()
 
     for item in list(scene.items()):
         if hasattr(scene, "canvas_item") and item is scene.canvas_item:

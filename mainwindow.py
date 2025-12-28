@@ -32,7 +32,7 @@ class MainWindow(QMainWindow):
         self.current_scene = None
         self.setWindowTitle("Smartbook")
         self.setMinimumSize(1000, 700)
-        self.undo_stack = QUndoStack(self)
+        #self.undo_stack = QUndoStack(self)  #UNDO (Auskommentiert wegen Fehler)
 
         appdata = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
         self.workspace_dir = Path(appdata) / "SmartbookWorkspace"
@@ -78,15 +78,15 @@ class MainWindow(QMainWindow):
 
 
         # Undo / Redo
-        act_undo = QAction("↩️ Undo", self)
+        """act_undo = QAction("↩️ Undo", self)
         act_undo.setShortcut("Ctrl+Z")
         act_undo.triggered.connect(self.undo_stack.undo)
         toolbar.addAction(act_undo)
 
-        act_redo = QAction("↪️ Redo", self)
+        act_redo = QAction("↪️ Redo", self)                    #UNDO (Auskommentiert wegen Fehler)
         act_redo.setShortcut("Ctrl+Y")
         act_redo.triggered.connect(self.undo_stack.redo)
-        toolbar.addAction(act_redo)
+        toolbar.addAction(act_redo)"""
 
         # SIDEBAR + CANVAS LAYOUT
         central = QWidget()
@@ -233,7 +233,7 @@ class MainWindow(QMainWindow):
             font.setUnderline(True)
             title_item.setFont(font)
             title_item.setDefaultTextColor(Qt.lightGray)
-            title_item.setPos(20, 20)
+            title_item.setPos(65, 65)
             scene.addItem(title_item)
 
             # deserialize scene content (if any)

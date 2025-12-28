@@ -93,7 +93,7 @@ class CanvasTextItem(QGraphicsTextItem):
         if change == QGraphicsItem.ItemPositionHasChanged:
             if self.scene() and self._old_pos != self._new_pos:
                 cmd = MoveCommand(self, self._old_pos, self._new_pos)
-                self.scene().undo_stack.push(cmd)
+                #self.scene().undo_stack.push(cmd)              #UNDO (Auskommentiert wegen Fehler)
         return super().itemChange(change, value)
 
     def activate_edit_mode(self):
@@ -199,6 +199,12 @@ class CanvasTextItem(QGraphicsTextItem):
             if view.hasFocus():
                 event.ignore()
                 return
+            
+        new_text = self.toPlainText()
+
+        """if scene and new_text != self._old_text:
+            cmd = TextEditCommand(self, self._old_text, new_text) #UNDO (Auskommentiert wegen Fehler)
+            scene.undo_stack.push(cmd)"""
 
         cursor = self.textCursor()
         cursor.clearSelection()
@@ -277,7 +283,7 @@ class CanvasTextItem(QGraphicsTextItem):
             self.textInteractionFlags() == Qt.NoTextInteraction:
 
                 cmd = DeleteTextCommand(scene, self)
-                scene.undo_stack.push(cmd)
+                #scene.undo_stack.push(cmd)          #UNDO (Auskommentiert wegen Fehler)
                 event.accept()
                 return
 
@@ -307,7 +313,7 @@ class MoveCommand(QUndoCommand):
         super().__init__("Move Item")
         self.item = item
         self.old_pos = old_pos
-        self.new_pos = new_pos
+        self.new_pos = new_pos 
 
     def undo(self):
         self.item.setPos(self.old_pos)

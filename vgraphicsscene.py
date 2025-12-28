@@ -84,7 +84,7 @@ class ViewGraphicsScene(QGraphicsScene):
         self.main_window = main_window
         self.last_pos = None
         self._move_counter = 0
-        self.undo_stack = main_window.undo_stack
+        #self.undo_stack = main_window.undo_stack          #UNDO (Auskommentiert wegen Fehler)
         self.setSceneRect(0, 0, width, height)
         # Drawing state
         self.drawing = False
@@ -418,6 +418,12 @@ class ViewGraphicsScene(QGraphicsScene):
 
 
     def mousePressEvent(self, event):
+        if self.drawing_enabled and event.button() == Qt.LeftButton:
+            self.last_pos = event.scenePos()
+            self._move_counter = 0
+            self._pre_pixmap = self.canvas_pixmap.copy()
+            return
+
         clicked_items = self.items(event.scenePos())
 
         clicked_text = any(
@@ -462,19 +468,18 @@ class ViewGraphicsScene(QGraphicsScene):
 
     def mouseReleaseEvent(self, event):
         if self.drawing_enabled and event.button() == Qt.LeftButton:
-            self.last_pos = None
-            self._move_counter = 0
-
-
-        if self.drawing_enabled and event.button() == Qt.LeftButton:
-            self.last_pos = None
             post = self.canvas_pixmap.copy()
-            if self._pre_pixmap is not None:
-                self.undo_stack.push(PixmapCommand(self.canvas_item, self._pre_pixmap, post))
+            """if self._pre_pixmap is not None:
+                self.undo_stack.push(
+                    PixmapCommand(self.canvas_item, self._pre_pixmap, post)  #UNDO (Auskommentiert wegen Fehler)
+                )"""
+            self.last_pos = None
             self._pre_pixmap = None
+            self._move_counter = 0
             return
 
         super().mouseReleaseEvent(event)
+
     # ----------------- Tablet Events -----------------
     def tabletEvent(self, event):
         return
@@ -548,14 +553,14 @@ class ViewGraphicsScene(QGraphicsScene):
 
 
 
-# ----------------- PixmapCommand (Undo/Redo) -----------------
+"""# ----------------- PixmapCommand (Undo/Redo) -----------------
 class PixmapCommand(QUndoCommand):
     def __init__(self, pixmap_item, before_pixmap, after_pixmap):
         super().__init__()
         self.pixmap_item = pixmap_item
         self.before = before_pixmap.copy()
-        self.after = after_pixmap.copy()
+        self.after = after_pixmap.copy()                         #UNDO (Auskommentiert wegen Fehler)
     def undo(self):
         self.pixmap_item.setPixmap(self.before)
     def redo(self):
-        self.pixmap_item.setPixmap(self.after)
+        self.pixmap_item.setPixmap(self.after)"""
